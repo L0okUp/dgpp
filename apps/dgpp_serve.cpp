@@ -168,6 +168,8 @@ struct ServeKnobs {
   bool reasoning_in_content = false;
   // Native template defaults; request kwargs override the same keys.
   std::string default_chat_template_kwargs = "{}";
+  // Empty uses chat_template.jinja. Its content hash is in prefix_key.
+  std::string chat_template;
   dgpp::sched::AdmissionPolicy admission;  // M6 6d: full (default) or grow
   double stats_interval_s = 10.0;  // the throughput line's period; 0 = off
   bool mtp = false;                // the throughput line's MTP group
@@ -1071,9 +1073,15 @@ int serve_openai(dgpp::sched::SchedulerEngine* engine, int64_t vocab_size,
     DGPP_LOG_INFO("serve: tokenizer {:#x}, the DeepSeek-V4 prompt renderer {:#x}", tok.revision_hash(),
                   template_hash);
   } else {
-    tpl.emplace(dgpp::text::ChatTemplate::load((fs::path(ckpt) / "chat_template.jinja").string()));
+    const fs::path template_path = k.chat_template.empty()
+                                       ? fs::path(ckpt) / "chat_template.jinja"
+                                       : (fs::path(k.chat_template).is_absolute()
+                                              ? fs::path(k.chat_template)
+                                              : fs::path(ckpt) / k.chat_template);
+    tpl.emplace(dgpp::text::ChatTemplate::load(template_path.string()));
     template_hash = tpl->source_hash();
-    DGPP_LOG_INFO("serve: tokenizer {:#x}, template {:#x} loaded", tok.revision_hash(), template_hash);
+    DGPP_LOG_INFO("serve: tokenizer {:#x}, template {} {:#x} loaded", tok.revision_hash(),
+                  template_path.string(), template_hash);
     // A family whose engine carries a vision tower serves images with it: the
     // same template, with each image_url part replaced by the checkpoint's own
     // delimiters and one pad token per visual token. The delimiter ids come
@@ -1412,6 +1420,8 @@ int main(int argc, char** argv) {
       "    </think> into content instead of reasoning_content\n"
       "  template defaults: [--default-chat-template-kwargs JSON (default {})]\n"
       "    sets native template kwargs; request kwargs override the same keys\n"
+      "  [--chat-template PATH]: alternate Jinja template (relative to checkpoint unless absolute)\n"
+      "  [--draft-logit-scale X (default 1)]: finite positive draft-only proposal multiplier\n"
       "  logging: [--stats-interval-s X (default 10; 0 = off)]: one INFO line\n"
       "    per interval with the aggregate prefill and decode throughput,\n"
       "    the live and queued counts, the pool and the prefix cache; the\n"
@@ -1491,6 +1501,8 @@ int main(int argc, char** argv) {
   std::optional<uint64_t> fixed_seed;
   bool reasoning_in_content = false;
   std::string default_chat_template_kwargs = "{}";
+  std::string chat_template;
+  float draft_logit_scale = 1.0f;
   std::string model_alias;
   double stats_interval_s = 10.0;  // the throughput line's period
   // The cluster config: found first, whatever its position,
@@ -1580,6 +1592,8 @@ int main(int argc, char** argv) {
     compact_batches = e.compact_batches;
     graph_batch_min_live = e.graph_batch_min_live;
     sampling_candidates = e.sampling_candidates;
+    chat_template = e.chat_template;
+    draft_logit_scale = e.draft_logit_scale;
     prefix_cache_gib = e.prefix_cache_gib;
     admission_mode = e.admission;
     admission_window = e.admission_window;
@@ -1727,6 +1741,8 @@ int main(int argc, char** argv) {
     else if (a == "--seed") fixed_seed = std::stoull(next());
     else if (a == "--reasoning-in-content") reasoning_in_content = true;
     else if (a == "--default-chat-template-kwargs") default_chat_template_kwargs = next();
+    else if (a == "--chat-template") chat_template = next();
+    else if (a == "--draft-logit-scale") draft_logit_scale = std::stof(next());
     else if (a == "--stats-interval-s") stats_interval_s = std::stod(next());
     else if (a == "--config") next();  // applied above, before the flags
     else {
@@ -2200,6 +2216,12 @@ int main(int argc, char** argv) {
     DGPP_LOG_ERROR("--prefix-cache-gib must be >= 0, got {}", prefix_cache_gib);
     return 2;
   }
+  if (!(std::isfinite(draft_logit_scale) && draft_logit_scale > 0.0f)) {
+    DGPP_LOG_ERROR("--draft-logit-scale must be finite and > 0, got {}", draft_logit_scale);
+    return 2;
+  }
+  // GraphEngine reads this before construction; no target sampler receives it.
+  setenv("DGPP_SPEC_DRAFT_LOGIT_SCALE", std::to_string(draft_logit_scale).c_str(), 1);
   if (!(stats_interval_s >= 0.0)) {
     DGPP_LOG_ERROR("--stats-interval-s must be >= 0, got {}", stats_interval_s);
     return 2;
@@ -2624,6 +2646,7 @@ int main(int argc, char** argv) {
     knobs.fixed_seed = fixed_seed;
     knobs.reasoning_in_content = reasoning_in_content;
     knobs.default_chat_template_kwargs = default_chat_template_kwargs;
+    knobs.chat_template = chat_template;
     knobs.mtp = mtp || !dflash_dir.empty();  // the throughput line's MTP group (the drafter reports through it)
     knobs.stats_interval_s = stats_interval_s;
     knobs.world = world;

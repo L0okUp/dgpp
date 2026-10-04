@@ -263,7 +263,7 @@ class QwenModel : public SessionModel<QwenModel> {
   const uint16_t* image_embeddings_ = nullptr;
   int64_t image_window_first_ = 0, image_window_end_ = 0;
 
-  void build_layer_objects(const QwenLayerResident& r);
+  void build_layer_objects(const QwenLayerResident& r, bool draft = false);
   void lm_head_logits(const uint16_t* hidden, int rows, cudaStream_t stream, bool last_row_only = false,
                       int compact_row = -1, int output_row = 0);
   static size_t dense_bridge_bytes(const QwenTextConfig& cfg, const QwenLocalGeometry& geo);
@@ -327,9 +327,10 @@ class QwenModel : public SessionModel<QwenModel> {
   std::unique_ptr<QwenGrSite> attn_gr_, mlp_gr_, mixer_;
   std::unique_ptr<QwenGdnLayer> gdn_;
   std::unique_ptr<QwenQsaLayer> qsa_;
-  std::unique_ptr<QwenMoeLayer> moe_;
+  std::unique_ptr<QwenMoeLayer> moe_;       // backbone router
+  std::unique_ptr<QwenMoeLayer> mtp_moe_;   // physical MTP draft router
   std::unique_ptr<QwenPleLayer> ple_;
-  GlmMoeConfig moe_cfg_;
+  GlmMoeConfig moe_cfg_, mtp_moe_cfg_;
 
   // Per-slot state.
   int num_gdn_ = 0, num_qsa_ = 0;

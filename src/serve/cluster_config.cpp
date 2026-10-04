@@ -341,6 +341,14 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
             fail(what, "'" + ek + "' must be auto, sampled or greedy");
         }
         else if (p.key == "sampling_candidates") e.sampling_candidates = static_cast<int>(integer(x, ek, what, 1, 256));
+        else if (p.key == "chat_template") {
+          e.chat_template = text(x, ek, what);
+          if (e.chat_template.empty()) fail(what, "'" + ek + "' must not be empty");
+        } else if (p.key == "draft_logit_scale") {
+          e.draft_logit_scale = static_cast<float>(number(x, ek, what));
+          if (!(std::isfinite(e.draft_logit_scale) && e.draft_logit_scale > 0.0f))
+            fail(what, "'" + ek + "' must be finite and > 0");
+        }
         else if (p.key == "prefix_cache_gib") {
           e.prefix_cache_gib = number(x, ek, what);
           if (e.prefix_cache_gib < 0.0) fail(what, "'" + ek + "' must be >= 0 (0 turns the cache off)");

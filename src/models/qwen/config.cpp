@@ -1,5 +1,6 @@
 #include "models/qwen/config.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -267,6 +268,7 @@ QwenTextConfig QwenTextConfig::parse(const minijson::Value& tc,
   // --- MoE --------------------------------------------------------------------
   c.num_experts = require_int(tc, "num_experts");
   c.num_experts_per_tok = require_int(tc, "num_experts_per_tok");
+  c.mtp_num_experts_per_tok = c.num_experts_per_tok;
   c.moe_intermediate_size = require_int(tc, "moe_intermediate_size");
   c.shared_expert_intermediate_size = require_int(tc, "shared_expert_intermediate_size");
   c.norm_topk_prob = optional_bool(tc, "norm_topk_prob", true);
@@ -353,6 +355,7 @@ QwenTextConfig QwenTextConfig::parse(const minijson::Value& tc,
         throw std::runtime_error("Qwen quantization_config.config_groups: only NVFP4 (4-bit float, group 16) is implemented");
       c.experts_fp8 = false;
       c.experts_nvfp4 = true;
+      c.source_profile = QwenSourceProfile::Nvfp4;
       c.ngram_table_fp8 = false;
       return c;
     }
@@ -375,25 +378,21 @@ QwenTextConfig QwenTextConfig::parse(const minijson::Value& tc,
         bad("the hybrid's int8 lm_head (lm_head: true) is required — Intel's raw AutoRound release is not served");
       const minijson::Value* dyn = q.find("dynamic");
       if (dyn == nullptr || !dyn->is_object()) bad("the dynamic rule map is missing");
-      bool head8 = false;
+      int head_bits = 0;
       std::vector<std::string> excluded;
       for (const auto& m : dyn->members()) {
         if (m.key.rfind("+:", 0) == 0) {
           if (m.key != "+:.*lm_head$") bad("unsupported + rule '" + m.key + "'");
-          if (!m.value.is_object() || require_int(m.value, "bits") != 8)
-            bad("the lm_head rule must lift it to 8 bits");
-          head8 = true;
+          if (!m.value.is_object()) bad("the lm_head rule must be an object");
+          head_bits = static_cast<int>(require_int(m.value, "bits"));
+          if (head_bits != 4 && head_bits != 8) bad("the lm_head rule must select 4 or 8 bits");
         } else if (m.key.rfind("-:", 0) == 0) {
           excluded.push_back(m.key.substr(2));
         } else {
           bad("unknown dynamic rule '" + m.key + "'");
         }
       }
-      if (!head8) bad("the int8 lm_head rule (+:.*lm_head$) is missing — Intel's raw AutoRound release is not served");
-      for (const std::string& e : excluded)
-        if (e.find("layers\\.") != std::string::npos)
-          bad("a whole layer's experts are excluded ('" + e +
-              "': the base hybrid's BF16 draft experts) — serve the -MTP_int4RTN variant");
+      if (head_bits == 0) bad("the lm_head rule (+:.*lm_head$) is missing");
       for (const char* need : {"linear_attn", "self_attn", "hyper_connection", "shared_expert",
                                "\\.ple\\.", "embed", "fc_hidden", "\\.gate$"}) {
         bool found = false;
@@ -401,10 +400,29 @@ QwenTextConfig QwenTextConfig::parse(const minijson::Value& tc,
         if (!found)
           bad(std::string("the exclusion of '") + need + "' is missing (the engine reads that class unpacked)");
       }
+      const bool excludes_draft = std::any_of(excluded.begin(), excluded.end(), [](const std::string& e) {
+        return e.find("layers\\.48\\.") != std::string::npos;
+      });
+      if (head_bits == 8) {
+        if (excludes_draft)
+          bad("a whole draft layer is excluded; serve the all-int4 MTP variant instead");
+        c.source_profile = QwenSourceProfile::AutoRoundHybrid;
+      } else {
+        static const std::vector<std::string> a5b_exclusions = {
+            ".*linear_attn.*", ".*self_attn.*", ".*hyper_connection.*", ".*visual.*",
+            ".*shared_expert.*", ".*\\.ple\\..*", ".*embed.*", ".*fc_hidden.*",
+            ".*layers\\.48\\..*", ".*\\.gate$"};
+        if (excluded != a5b_exclusions || c.num_hidden_layers != 48 || c.num_experts != 512 ||
+            c.num_experts_per_tok != 5 || c.moe_intermediate_size != 640 ||
+            c.shared_expert_intermediate_size != 1280 || c.mtp_num_layers != 1)
+          bad("the 4-bit lm_head profile is reserved for the exact A5B AutoRound checkpoint");
+        c.source_profile = QwenSourceProfile::A5bAutoGptq;
+        c.mtp_num_experts_per_tok = 10;
+      }
       c.experts_fp8 = false;
       c.experts_nvfp4 = false;
       c.experts_gptq_int4 = true;
-      c.lm_head_gptq_int8 = true;
+      c.lm_head_gptq_bits = head_bits;
       c.dense_fp8_shipped = true;
       c.gptq_group = 128;
       c.ngram_table_fp8 = true;  // served from the FP8 release's shards (engine.ngram_table_dir)

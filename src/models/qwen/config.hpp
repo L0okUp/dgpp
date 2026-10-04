@@ -17,6 +17,9 @@
 namespace dgpp {
 
 enum class QwenLayerKind : int { Gdn, Qsa };
+// Some checkpoint facts are intentionally not encoded in config.json. A5B's
+// MTP draft, for example, was trained with a different router top-k.
+enum class QwenSourceProfile : int { Fp8, Nvfp4, AutoRoundHybrid, A5bAutoGptq };
 
 // The hashed n-gram table's geometry, derived from config alone the way
 // the reference derives it (§1.7): head h's vocabulary is the (h+1)-th
@@ -86,6 +89,7 @@ struct QwenTextConfig {
   // --- MoE ------------------------------------------------------------------
   int num_experts = 512;
   int num_experts_per_tok = 10;
+  int mtp_num_experts_per_tok = 10;
   int moe_intermediate_size = 640;
   int shared_expert_intermediate_size = 640;
   bool norm_topk_prob = true;
@@ -132,10 +136,14 @@ struct QwenTextConfig {
   // checkpoint (the binding refuses any other form by name). The loader
   // transposes the codes into the packed core's row layout and keeps the
   // scales untouched; the zeros are verified and dropped.
+  QwenSourceProfile source_profile = QwenSourceProfile::Fp8;
   bool experts_gptq_int4 = false;
-  bool lm_head_gptq_int8 = false;
+  // 0 is a dense/FP8 head; GPTQ profiles select 4 or 8 explicitly.
+  int lm_head_gptq_bits = 0;
   bool dense_fp8_shipped = false;
   int gptq_group = 128;
+
+  int draft_experts_per_tok() const { return mtp_num_experts_per_tok; }
 
   // --- vision (docs/vision.md) --------------------------------------------
   // The multimodal release's tower, parsed from the root config's

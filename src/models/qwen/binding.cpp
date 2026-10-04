@@ -231,8 +231,9 @@ std::vector<QwenExpectedTensor> qwen_expected_global_tensors(const QwenTextConfi
   const int64_t H = cfg.hidden_size;
   add_bf16(out, "model.language_model.embed_tokens.weight", {cfg.vocab_size, H},
            QwenWeightClass::Embed, -1);
-  if (cfg.lm_head_gptq_int8)
-    add_gptq(out, "lm_head", cfg.vocab_size, H, 8, cfg.gptq_group, QwenWeightClass::LmHead, -1, -1);
+  if (cfg.lm_head_gptq_bits != 0)
+    add_gptq(out, "lm_head", cfg.vocab_size, H, cfg.lm_head_gptq_bits, cfg.gptq_group,
+             QwenWeightClass::LmHead, -1, -1);
   else
     add_bf16(out, "lm_head.weight", {cfg.vocab_size, H}, QwenWeightClass::LmHead, -1);
   expect_gr(out, "model.language_model.hyper_connection_mixer.", cfg, -1, QwenWeightClass::Mixer,

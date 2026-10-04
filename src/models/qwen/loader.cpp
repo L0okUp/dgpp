@@ -864,9 +864,10 @@ size_t QwenLoaderFamily::globals_bytes(const QwenTextConfig& cfg, int rank, int 
   size_t b = 0;
   b += align_up_256(static_cast<size_t>(cfg.vocab_size) * H * 2);                  // embed
   const size_t head_rows = static_cast<size_t>(QwenLocalGeometry::from_config(cfg, rank, world, head).lm_vocab_count);
-  if (cfg.lm_head_gptq_int8) {  // the hybrid's int8 g128 head: packed words + f16 scales
-    b += align_up_256(head_rows * H) + align_up_256(head_rows * (H / static_cast<size_t>(cfg.gptq_group)) * 2);
-    if (!g_draft_vocab_ids.empty()) {  // the draft vocabulary slice: rows, scales, ids
+  if (cfg.lm_head_gptq_bits != 0) {
+    b += align_up_256(head_rows * H * static_cast<size_t>(cfg.lm_head_gptq_bits) / 8) +
+         align_up_256(head_rows * (H / static_cast<size_t>(cfg.gptq_group)) * 2);
+    if (cfg.lm_head_gptq_bits == 8 && !g_draft_vocab_ids.empty()) {  // draft slice uses the int8 plane layout
       const size_t n = g_draft_vocab_ids.size();
       b += align_up_256(n * H) + align_up_256(n * (H / static_cast<size_t>(cfg.gptq_group)) * 2) + align_up_256(n * 4);
     }
@@ -944,8 +945,8 @@ void QwenLoaderFamily::build_globals(const QwenTextConfig& cfg_, const QwenLocal
     g.inject = nullptr;
   };
   globals_.embed = copy_global("model.language_model.embed_tokens.weight");
-  if (cfg_.lm_head_gptq_int8) {
-    // The hybrid's int8 g128 head: the vocab slice's columns of the GPTQ
+  if (cfg_.lm_head_gptq_bits != 0) {
+    // The GPTQ head: the vocab slice's columns of the checkpoint layout
     // triple transposed into packed rows (loaders/gptq_repack.hpp), the
     // scales untouched, the zeros verified. Every boot (the globals are
     // not in the resident image); 16 threads over the columns.
@@ -953,7 +954,7 @@ void QwenLoaderFamily::build_globals(const QwenTextConfig& cfg_, const QwenLocal
     const TensorInfo& ts = lookup("lm_head.scales");
     const TensorInfo& tz = lookup("lm_head.qzeros");
     const int64_t H = cfg_.hidden_size, V = cfg_.vocab_size, g = cfg_.gptq_group;
-    constexpr int bits = 8, per = 4;
+    const int bits = cfg_.lm_head_gptq_bits, per = 32 / bits;
     if (tw.shape != std::vector<int64_t>{H / per, V} || ts.shape != std::vector<int64_t>{H / g, V} ||
         tz.shape != std::vector<int64_t>{H / g, V / per})
       throw std::runtime_error("qwen loader: the lm_head GPTQ triple has the wrong geometry");
@@ -985,11 +986,11 @@ void QwenLoaderFamily::build_globals(const QwenTextConfig& cfg_, const QwenLocal
     if (gptq_repack_all(gptq_repack_split(j, 16), 16) >= 0)
       throw std::runtime_error(
           "qwen loader: 'lm_head.qzeros' holds a word that is not the symmetric constant "
-          "(the packed core's fixed offset needs zero = 128)");
+          "required by the packed core's fixed-offset decode");
     // The bit-plane layout (kernels/packq_head.hpp, 2026-09-29): the
     // argmax-only head reads three of every four sectors. Default on;
     // DGPP_QWEN_HEAD_PLANES=off keeps the row layout (the A/B knob).
-    if (!g_draft_vocab_ids.empty()) {
+    if (bits == 8 && !g_draft_vocab_ids.empty()) {
       // The draft's slice: the set's rows of the row-layout head (and their
       // scales) into their own matrix, in the plane layout, plus the ids.
       const std::vector<int32_t>& ids = g_draft_vocab_ids;
@@ -1021,7 +1022,7 @@ void QwenLoaderFamily::build_globals(const QwenTextConfig& cfg_, const QwenLocal
       DGPP_LOG_INFO("qwen loader: draft vocabulary slice: {} of {} head rows ({:.0f} MiB)", n_slice,
                     count, static_cast<double>(n_slice * (static_cast<size_t>(H) + groups * 2)) / (1 << 20));
     }
-    {
+    if (bits == 8) {
       const char* e = std::getenv("DGPP_QWEN_HEAD_PLANES");
       const bool planes = !(e != nullptr && (std::string(e) == "off" || std::string(e) == "0"));
       if (planes) {

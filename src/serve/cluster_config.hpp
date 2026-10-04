@@ -213,6 +213,9 @@ struct ClusterConfig {
     std::string mtp_draft = "auto";
     int graph_batch_min_live = 0;  // 0 = min(2, max_concurrency) (the batch family, 2026-09-07)
     int sampling_candidates = 128;
+    std::string chat_template;  // checkpoint-relative unless absolute; empty is checkpoint default
+    // Multiplies speculative draft logits only; target sampling remains unchanged.
+    float draft_logit_scale = 1.0f;
     double prefix_cache_gib = 1.5;
     int prefix_min_tokens = 1024;       // no prefix snapshot below this position (0: every cut)
     bool prefix_head_snapshots = true;  // a cold prompt also keeps its first structural cut (the system prompt's end)

@@ -495,7 +495,7 @@ DGPP_TEST(qwen_loader_repacks_the_autoround_hybrid_exactly) {
   // classes' shipped fp8 codes and F32 scales land as is; the head is the
   // int8 triple transposed; the zeros never become resident.
   const Fixture fx = write_gptq_fixture();
-  require(fx.cfg.experts_gptq_int4 && fx.cfg.lm_head_gptq_int8 && fx.cfg.dense_fp8_shipped,
+  require(fx.cfg.experts_gptq_int4 && fx.cfg.lm_head_gptq_bits == 8 && fx.cfg.dense_fp8_shipped,
           "the fixture selects the hybrid");
   const bool saved = QwenLayerStream::dense_weights_fp8();
   QwenLayerStream::set_dense_weights_fp8(true);

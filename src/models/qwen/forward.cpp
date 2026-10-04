@@ -128,6 +128,8 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
   // The routed chain on this rank's slice of the intermediate dim.
   moe_cfg_ = QwenMoeLayer::routed_config(H, static_cast<int>(loader_.geometry().local_inter),
                                          cfg_.num_experts, cfg_.num_experts_per_tok, cfg_.norm_topk_prob);
+  mtp_moe_cfg_ = QwenMoeLayer::routed_config(H, static_cast<int>(loader_.geometry().local_inter),
+                                             cfg_.num_experts, cfg_.draft_experts_per_tok(), cfg_.norm_topk_prob);
 
   // Per-slot state from the local geometry (the layer objects agree — they
   // are built from the same numbers).
@@ -362,17 +364,27 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
   const GlmMoeConfig moe_cfg = QwenMoeLayer::routed_config(cfg.hidden_size, static_cast<int>(geo.local_inter),
                                                            cfg.num_experts, cfg.num_experts_per_tok, cfg.norm_topk_prob);
   size_t moe_pinned = 0;
-  const int table_slots = residency == QwenResidency::Resident ? cfg.num_hidden_layers + (mtp ? 1 : 0) : 0;
+  const int table_slots = residency == QwenResidency::Resident ? cfg.num_hidden_layers : 0;
   const size_t moe_dev = QwenMoeLayer::scratch_bytes(moe_cfg, geo.local_shared_inter, max_tokens, &moe_pinned,
                                                      static_cast<int>(rows), table_slots);
-  plan.add("moe scratch (routed slots, shared expert, graph tables)", moe_dev, moe_pinned);
+  plan.add("backbone MoE scratch (routed slots, shared expert, graph tables)", moe_dev, moe_pinned);
+  if (mtp) {
+    const GlmMoeConfig mtp_moe_cfg = QwenMoeLayer::routed_config(
+        cfg.hidden_size, static_cast<int>(geo.local_inter), cfg.num_experts,
+        cfg.draft_experts_per_tok(), cfg.norm_topk_prob);
+    size_t mtp_moe_pinned = 0;
+    const size_t mtp_moe_dev = QwenMoeLayer::scratch_bytes(mtp_moe_cfg, geo.local_shared_inter, max_tokens,
+                                                            &mtp_moe_pinned, static_cast<int>(rows),
+                                                            residency == QwenResidency::Resident ? 1 : 0);
+    plan.add("MTP draft MoE scratch (top-k, shared expert, graph table)", mtp_moe_dev, mtp_moe_pinned);
+  }
   if (cfg.experts_nvfp4)
     plan.add("moe W4A4 activation workspace",
              GlmMoeLayer::w4a4_scratch_bytes(moe_cfg, max_tokens, true));
-  if (cfg.lm_head_gptq_int8)
+  if (cfg.lm_head_gptq_bits != 0)
     plan.add("head argmax bounds and candidate list (four rows x vocab fp32, vocab int32)",
              4 * static_cast<size_t>(geo.lm_vocab_count) * 4 + static_cast<size_t>(geo.lm_vocab_count) * 4 + 64);
-  if (cfg.lm_head_gptq_int8 && QwenLayerStream::draft_vocab_count() > 0) {
+  if (cfg.lm_head_gptq_bits == 8 && QwenLayerStream::draft_vocab_count() > 0) {
     const size_t n = static_cast<size_t>(QwenLayerStream::draft_vocab_count());
     plan.add("draft vocabulary slice (int8 head rows, scales, ids)",
              n * static_cast<size_t>(cfg.hidden_size) + n * static_cast<size_t>(cfg.hidden_size / cfg.gptq_group) * 2 + n * 4);
@@ -694,7 +706,7 @@ void QwenModel::push_context(int req, int32_t prev1, int32_t prev2) {
   DGPP_CUDA_OK(cudaMemcpyAsync(ctx(req), h, 4 * sizeof(int32_t), cudaMemcpyHostToDevice, stream_));
 }
 
-void QwenModel::build_layer_objects(const QwenLayerResident& r) {
+void QwenModel::build_layer_objects(const QwenLayerResident& r, bool draft) {
   const int H = cfg_.hidden_size;
   if (!attn_gr_) {
     attn_gr_ = std::make_unique<QwenGrSite>(r.attn_gr, gw_, cfg_.hc_count, H, cfg_.hc_lowrank, max_tokens_, cfg_.rms_norm_eps);
@@ -720,16 +732,15 @@ void QwenModel::build_layer_objects(const QwenLayerResident& r) {
       qsa_->rebind(r.qsa);
     }
   }
-  if (!moe_) {
-    // The decode fast path's provisioning: the decode-row ceiling's slot rows and one
-    // graph table slot per MoE layer (resident stacks bake them in).
-    const int table_slots =
-        loader_.residency() == QwenResidency::Resident ? n_moe_layers_ + (mtp_ ? 1 : 0) : 0;
-    moe_ = std::make_unique<QwenMoeLayer>(moe_view(r.moe), moe_cfg_, gemm_, max_tokens_, max_decode_rows_,
-                                          table_slots);
-    moe_->set_mma_from_rows(gw_.mma_from_rows);
+  std::unique_ptr<QwenMoeLayer>& routed = draft ? mtp_moe_ : moe_;
+  const GlmMoeConfig& routed_cfg = draft ? mtp_moe_cfg_ : moe_cfg_;
+  if (!routed) {
+    const int table_slots = loader_.residency() != QwenResidency::Resident ? 0 : (draft ? 1 : n_moe_layers_);
+    routed = std::make_unique<QwenMoeLayer>(moe_view(r.moe), routed_cfg, gemm_, max_tokens_, max_decode_rows_,
+                                             table_slots);
+    routed->set_mma_from_rows(gw_.mma_from_rows);
   } else {
-    moe_->rebind(moe_view(r.moe));
+    routed->rebind(moe_view(r.moe));
   }
   if (r.has_ple) {
     if (!ple_) {
@@ -1403,10 +1414,10 @@ void QwenModel::graph_prepare() {
     if (pack) pack_layer_companions(layer, r);
   }
   if (mtp_) {
-    // The draft layer's MoE takes the slot after the main stack's.
+    // The draft has its own one-slot MoE graph table.
     const QwenLayerResident& r = loader_.load_layer(cfg_.mtp_layer());
-    build_layer_objects(r);
-    moe_->prepare_graph_table(n_moe_layers_, stream_);
+    build_layer_objects(r, /*draft=*/true);
+    mtp_moe_->prepare_graph_table(0, stream_);
     if (pack) pack_layer_companions(cfg_.mtp_layer(), r);
   }
   if (pack) finish_companions();
@@ -1587,7 +1598,7 @@ void QwenModel::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, 
 
   // ---- the draft layer (the stack's objects rebound to its weights) ------
   const QwenLayerResident& r = loader_.load_layer(cfg_.mtp_layer());
-  build_layer_objects(r);
+  build_layer_objects(r, /*draft=*/true);
   const auto stage = [&](uint16_t* fallback, int width) -> uint16_t* {
     if (!boundary_) return fallback;
     uint16_t* s = boundary_->stage(T, width);
@@ -1620,11 +1631,11 @@ void QwenModel::mtp_run_rows(int req, const int64_t* tokens, int64_t first_pos, 
   mlp_gr_->mix(mtp_r_, x_, T, stream_);
   uint16_t* ffn_out = stage(y_, H);
   if (decode_row)
-    moe_->enqueue_decode(x_, ffn_out, T, stream_, capture ? n_moe_layers_ : -1);
+    mtp_moe_->enqueue_decode(x_, ffn_out, T, stream_, capture ? 0 : -1);
   else if (moe_prefill_host_path_)
-    moe_->enqueue(x_, ffn_out, T, stream_);
+    mtp_moe_->enqueue(x_, ffn_out, T, stream_);
   else
-    moe_->enqueue_prefill(x_, ffn_out, T, stream_);
+    mtp_moe_->enqueue_prefill(x_, ffn_out, T, stream_);
   if (decode_row) prefetch_head(globals_.mtp_mixer);
   fold(ffn_out, H);
   mlp_gr_->combine(mtp_r_, ffn_out, T, stream_);

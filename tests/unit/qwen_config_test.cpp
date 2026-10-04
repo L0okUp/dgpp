@@ -214,7 +214,7 @@ std::string gptq_json(const std::string& from, const std::string& to) {
 
 DGPP_TEST(qwen_config_parses_the_autoround_hybrid) {
   const dgpp::QwenTextConfig c = parse(text_json(), kGptq);
-  require(c.experts_gptq_int4 && c.lm_head_gptq_int8 && c.dense_fp8_shipped && c.gptq_group == 128,
+  require(c.experts_gptq_int4 && c.lm_head_gptq_bits == 8 && c.dense_fp8_shipped && c.gptq_group == 128,
           "the hybrid's forms");
   require(!c.experts_fp8 && !c.experts_nvfp4 && c.ngram_table_fp8, "no other expert form; the table e4m3");
   require(c.ngram_geometry().heads == 16, "the n-gram geometry still derives");
@@ -232,10 +232,34 @@ DGPP_TEST(qwen_config_parses_the_autoround_hybrid) {
   require(refusal(text_json(), gptq_json("\"+:.*lm_head$\": {\"bits\": 8}, ", "")).find("lm_head rule") != std::string::npos,
           "the missing int8 head rule refused");
   require(refusal(text_json(), gptq_json("\"-:.*visual.*\": {}", "\"-:.*visual.*\": {}, \"-:.*layers\\\\.48\\\\..*\": {}"))
-                  .find("MTP_int4RTN") != std::string::npos,
+                  .find("all-int4 MTP") != std::string::npos,
           "the base hybrid (BF16 draft experts) refused, naming the served variant");
   require(refusal(text_json(), gptq_json("\"-:.*linear_attn.*\": {}, ", "")).find("linear_attn") != std::string::npos,
           "a missing exclusion refused by name");
+}
+
+DGPP_TEST(qwen_config_parses_only_the_exact_a5b_autogptq_profile) {
+  std::string text = text_json("\"num_experts_per_tok\": 10, \"num_hidden_layers\": 48",
+                               "\"num_experts_per_tok\": 5, \"num_hidden_layers\": 48");
+  const size_t shared = text.find("\"shared_expert_intermediate_size\": 640");
+  require(shared != std::string::npos, "A5B shared-expert anchor");
+  text.replace(shared, std::string("\"shared_expert_intermediate_size\": 640").size(),
+               "\"shared_expert_intermediate_size\": 1280");
+  const std::string a5b = R"({"quant_method": "gptq", "bits": 4, "group_size": 128, "desc_act": false,
+    "sym": true, "lm_head": true,
+    "dynamic": {"+:.*lm_head$": {"bits": 4}, "-:.*linear_attn.*": {}, "-:.*self_attn.*": {},
+    "-:.*hyper_connection.*": {}, "-:.*visual.*": {}, "-:.*shared_expert.*": {},
+    "-:.*\\.ple\\..*": {}, "-:.*embed.*": {}, "-:.*fc_hidden.*": {},
+    "-:.*layers\\.48\\..*": {}, "-:.*\\.gate$": {}}})";
+  const dgpp::QwenTextConfig c = parse(text, a5b);
+  require(c.source_profile == dgpp::QwenSourceProfile::A5bAutoGptq && c.lm_head_gptq_bits == 4,
+          "A5B source profile and int4 head");
+  require(c.num_experts_per_tok == 5 && c.draft_experts_per_tok() == 10,
+          "backbone top-k 5 and draft top-k 10");
+  require(refusal(text,
+                  gptq_json("\"+:.*lm_head$\": {\"bits\": 8}", "\"+:.*lm_head$\": {\"bits\": 4}"))
+                  .find("exact A5B") != std::string::npos,
+          "a near-matching int4 policy is refused");
 }
 
 DGPP_TEST(qwen_config_parses_the_landed_checkpoint_when_present) {

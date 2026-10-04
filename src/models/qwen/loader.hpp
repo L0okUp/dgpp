@@ -165,7 +165,7 @@ struct QwenGlobalsResident {
   const uint16_t* embed = nullptr;    // BF16 [vocab, hidden]
   const uint16_t* lm_head = nullptr;  // BF16 [lm_vocab_count, hidden]
   GlmQuantMatrix lm_head_fp8;         // dense_weights fp8
-  GlmPackedMatrix lm_head_packed;     // the AutoRound hybrid's int8 g128 head (packed rows, f16 scales)
+  GlmPackedMatrix lm_head_packed;     // AutoRound GPTQ head (int4/int8, packed rows, f16 scales)
   // The opt-in draft vocabulary slice (engine.draft_vocab): the head rows
   // of the set, in the plane layout, and the set's ids (device, ascending).
   GlmPackedMatrix draft_head_packed;

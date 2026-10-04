@@ -881,7 +881,9 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
     spec.logprobs = -1;
     spec.seed = seed;
     spec.counter = 0;
-    spec.draft_temperature = sampling.temperature * proposal_temperature_scale();
+    // logit * S equals temperature / S for the draft proposal. Target rows
+    // retain sampling.temperature, so P is unchanged.
+    spec.draft_temperature = sampling.temperature / draft_logit_scale();
     push_spec(req, spec);
     // A fresh context: the prompt's counts arrive with the prefill.
     DGPP_CUDA_OK(cudaMemsetAsync(d_counts_ + static_cast<size_t>(req) * vocab_,
@@ -1801,15 +1803,13 @@ class GraphEngineAdapter final : public sched::SchedulerEngine {
   // own distribution, verified by the ratio rule (true, the default), or the
   // draft's argmax, accepted with probability P(draft) — exact either way.
   bool proposal_drafts_ = true;
-  // DGPP_SPEC_PROPOSAL_TEMP: the draft's temperature as a multiple of the
-  // request's (default 1). Exact at any value; a calibration knob for the
-  // draft head's overlap with the target.
-  static float proposal_temperature_scale() {
+  // Positive draft-logit multiplier, validated by the launcher.
+  static float draft_logit_scale() {
     static const float scale = [] {
-      const char* v = std::getenv("DGPP_SPEC_PROPOSAL_TEMP");
+      const char* v = std::getenv("DGPP_SPEC_DRAFT_LOGIT_SCALE");
       if (v == nullptr) return 1.0f;
       const float f = std::strtof(v, nullptr);
-      return (f > 0.0f && f < 10.0f) ? f : 1.0f;
+      return (std::isfinite(f) && f > 0.0f) ? f : 1.0f;
     }();
     return scale;
   }

@@ -194,6 +194,13 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
   require(table.engine.ngram_table_model == "Qwen/Qwen3.8-Flash-Next-FP8", "ngram_table_model parses");
   require(!refusal(R"({"model":"m","nodes":["h"],"engine":{"ngram_table_model":"nope"}})").empty(),
           "ngram_table_model must be ORG/NAME");
+  const auto a5b = dgpp::serve::parse_cluster_config(
+      R"({"model":"m","nodes":["h"],"engine":{"chat_template":"medium_chat_template.jinja","draft_logit_scale":2.5}})",
+      "t");
+  require(a5b.engine.chat_template == "medium_chat_template.jinja" && a5b.engine.draft_logit_scale == 2.5f,
+          "A5B template and draft logit scale parse");
+  require(!refusal(R"({"model":"m","nodes":["h"],"engine":{"draft_logit_scale":0}})").empty(),
+          "non-positive draft logit scale refused");
   // The bf16 weights' resident form: named by the config, off by default.
   const dgpp::serve::ClusterConfig bf12 = dgpp::serve::parse_cluster_config(
       R"({"model":"m","nodes":["h"],"engine":{"bf16_weights":"bf12"}})", "t");
