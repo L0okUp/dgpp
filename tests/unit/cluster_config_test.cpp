@@ -201,12 +201,15 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
   require(!refusal(R"({"model":"m","nodes":["h"],"engine":{"ngram_table_model":"nope"}})").empty(),
           "ngram_table_model must be ORG/NAME");
   const auto a5b = dgpp::serve::parse_cluster_config(
-      R"({"model":"m","nodes":["h"],"engine":{"chat_template":"medium_chat_template.jinja","draft_logit_scale":2.5}})",
+      R"({"model":"m","nodes":["h"],"engine":{"chat_template":"medium_chat_template.jinja","draft_logit_scale":2.5,"default_presence_penalty":0.5}})",
       "t");
-  require(a5b.engine.chat_template == "medium_chat_template.jinja" && a5b.engine.draft_logit_scale == 2.5f,
-          "A5B template and draft logit scale parse");
+  require(a5b.engine.chat_template == "medium_chat_template.jinja" && a5b.engine.draft_logit_scale == 2.5f &&
+              a5b.engine.default_presence_penalty == 0.5f,
+          "A5B template, draft logit scale and default presence penalty parse");
   require(!refusal(R"({"model":"m","nodes":["h"],"engine":{"draft_logit_scale":0}})").empty(),
           "non-positive draft logit scale refused");
+  require(!refusal(R"({"model":"m","nodes":["h"],"engine":{"default_presence_penalty":2.5}})").empty(),
+          "out-of-range default presence penalty refused");
   // The bf16 weights' resident form: named by the config, off by default.
   const dgpp::serve::ClusterConfig bf12 = dgpp::serve::parse_cluster_config(
       R"({"model":"m","nodes":["h"],"engine":{"bf16_weights":"bf12"}})", "t");

@@ -353,6 +353,12 @@ ClusterConfig parse_cluster_config(const std::string& json, const std::string& w
           e.draft_logit_scale = static_cast<float>(number(x, ek, what));
           if (!(std::isfinite(e.draft_logit_scale) && e.draft_logit_scale > 0.0f))
             fail(what, "'" + ek + "' must be finite and > 0");
+        } else if (p.key == "default_presence_penalty") {
+          e.default_presence_penalty = static_cast<float>(number(x, ek, what));
+          if (!(std::isfinite(e.default_presence_penalty) &&
+                e.default_presence_penalty >= -2.0f &&
+                e.default_presence_penalty <= 2.0f))
+            fail(what, "'" + ek + "' must be finite and in [-2, 2]");
         }
         else if (p.key == "prefix_cache_gib") {
           e.prefix_cache_gib = number(x, ek, what);

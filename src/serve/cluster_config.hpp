@@ -219,6 +219,9 @@ struct ClusterConfig {
     std::string chat_template;  // checkpoint-relative unless absolute; empty is checkpoint default
     // Multiplies speculative draft logits only; target sampling remains unchanged.
     float draft_logit_scale = 1.0f;
+    // Applied only when a request omits presence_penalty.  Explicit OpenAI
+    // request fields still take precedence.
+    float default_presence_penalty = 0.0f;
     double prefix_cache_gib = 1.5;
     int prefix_min_tokens = 1024;       // no prefix snapshot below this position (0: every cut)
     bool prefix_head_snapshots = true;  // a cold prompt also keeps its first structural cut (the system prompt's end)

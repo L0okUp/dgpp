@@ -1504,6 +1504,7 @@ int main(int argc, char** argv) {
   std::string default_chat_template_kwargs = "{}";
   std::string chat_template;
   float draft_logit_scale = 1.0f;
+  float default_presence_penalty = 0.0f;
   std::string model_alias;
   double stats_interval_s = 10.0;  // the throughput line's period
   // The cluster config: found first, whatever its position,
@@ -1596,6 +1597,7 @@ int main(int argc, char** argv) {
     sampling_candidates = e.sampling_candidates;
     chat_template = e.chat_template;
     draft_logit_scale = e.draft_logit_scale;
+    default_presence_penalty = e.default_presence_penalty;
     prefix_cache_gib = e.prefix_cache_gib;
     admission_mode = e.admission;
     admission_window = e.admission_window;
@@ -2480,6 +2482,7 @@ int main(int argc, char** argv) {
     sampling_defaults.min_p = generation_defaults.effective_min_p();
     sampling_defaults.repetition_penalty =
         generation_defaults.effective_repetition_penalty();
+    sampling_defaults.presence_penalty = default_presence_penalty;
     if (temperature) sampling_defaults.temperature = *temperature;
     if (top_p) sampling_defaults.top_p = *top_p;
     if (top_k) sampling_defaults.top_k = *top_k;
@@ -2494,10 +2497,10 @@ int main(int argc, char** argv) {
     }
     DGPP_LOG_INFO(
         "serve: sampling defaults temperature {} top_p {} top_k {} min_p {} "
-        "repetition_penalty {} ({}; overrides: {}{}{}{}{}{})",
+        "repetition_penalty {} presence_penalty {} ({}; overrides: {}{}{}{}{}{})",
         sampling_defaults.temperature, sampling_defaults.top_p,
         sampling_defaults.top_k, sampling_defaults.min_p,
-        sampling_defaults.repetition_penalty,
+        sampling_defaults.repetition_penalty, sampling_defaults.presence_penalty,
         generation_defaults.file_found ? "from generation_config.json"
                                        : "no generation_config.json: greedy",
         temperature ? "temperature " : "", top_p ? "top_p " : "",
