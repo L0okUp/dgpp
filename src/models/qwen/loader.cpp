@@ -1141,6 +1141,10 @@ bool g_prefill_fp8_gemm = false;
 }
 void QwenLayerStream::set_prefill_fp8_gemm(bool on) { g_prefill_fp8_gemm = on; }
 bool QwenLayerStream::prefill_fp8_gemm() { return g_prefill_fp8_gemm; }
+
+bool g_block_fp8_b12x = false;
+void QwenLayerStream::set_block_fp8_b12x(bool on) { g_block_fp8_b12x = on; }
+bool QwenLayerStream::block_fp8_b12x() { return g_block_fp8_b12x; }
 namespace {
 bool g_ngram_prestage = true;
 }

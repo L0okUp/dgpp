@@ -21,7 +21,8 @@ __device__ __forceinline__ float bf16_bits_to_float_d(uint32_t bits16) {
 __global__ __launch_bounds__(kQThreads) void fp8_quantize_rows_kernel(const uint16_t* __restrict__ act,
                                                                      size_t act_stride, int m, int k,
                                                                      uint8_t* __restrict__ q,
-                                                                     float* __restrict__ scales) {
+                                                                     float* __restrict__ scales,
+                                                                     bool b12x_min_scale) {
   const int groups = k / 128;
   const int gid = blockIdx.x * (kQThreads / 32) + threadIdx.x / 32;
   const int lane = threadIdx.x % 32;
@@ -33,7 +34,8 @@ __global__ __launch_bounds__(kQThreads) void fp8_quantize_rows_kernel(const uint
   float amax = fmaxf(fmaxf(fabsf(x[0]), fabsf(x[1])), fmaxf(fabsf(x[2]), fabsf(x[3])));
 #pragma unroll
   for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFFu, amax, o));
-  const float scale = amax > 0.f ? amax / 448.f : 1.f;
+  const float scale = b12x_min_scale ? fmaxf(amax / 448.f, 1.f / (448.f * 512.f))
+                                      : (amax > 0.f ? amax / 448.f : 1.f);
   const __nv_fp8x2_storage_t lo =
       __nv_cvt_float2_to_fp8x2(make_float2(x[0] / scale, x[1] / scale), __NV_SATFINITE, __NV_E4M3);
   const __nv_fp8x2_storage_t hi =
@@ -249,14 +251,14 @@ void launch(const uint8_t* a, const float* a_scales, const uint8_t* w, const flo
 }  // namespace
 
 void launch_fp8_quantize_rows(const uint16_t* act, size_t act_stride, int m, int k, uint8_t* q, float* scales,
-                              cudaStream_t stream) {
+                              cudaStream_t stream, bool b12x_min_scale) {
   if (m <= 0) return;
   if (k <= 0 || k % 128 != 0) throw std::invalid_argument("fp8 quantize: k must be a positive multiple of 128");
   if (act_stride % 4 != 0 || (reinterpret_cast<uintptr_t>(act) % 8) != 0)
     throw std::invalid_argument("fp8 quantize: the activation rows must be 8-byte aligned");
   const int pairs = m * (k / 128);
   const int blocks = (pairs + kQThreads / 32 - 1) / (kQThreads / 32);
-  fp8_quantize_rows_kernel<<<blocks, kQThreads, 0, stream>>>(act, act_stride, m, k, q, scales);
+  fp8_quantize_rows_kernel<<<blocks, kQThreads, 0, stream>>>(act, act_stride, m, k, q, scales, b12x_min_scale);
   DGPP_CUDA_OK(cudaGetLastError());
 }
 

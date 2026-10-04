@@ -101,10 +101,15 @@ void gemm_dense(const QwenGemmWorkspace& g, const uint16_t* act, int64_t act_str
     // (3 bytes a value at line rate) costs 494 / n of the GEMM's time
     // (the [320 x 10240] GR down: +60 % measured), while the fp8 GEMM
     // itself runs at cuBLAS's rate and saves the dequant alone.
-    if (m > 128 && n >= 1024 && g.a8 && QwenLayerStream::prefill_fp8_gemm() && k % 128 == 0 && w8.scale_block_cols == 128 &&
+    // b12x's compact block-FP8 path owns every A5B row shape, including
+    // decode and graph verification. The older switch remains prefill-only.
+    const bool block_fp8 = QwenLayerStream::block_fp8_b12x();
+    if ((block_fp8 || m > 128) && (block_fp8 || n >= 1024) && g.a8 &&
+        (block_fp8 || QwenLayerStream::prefill_fp8_gemm()) &&
+        k % 128 == 0 && w8.scale_block_cols == 128 &&
         static_cast<size_t>(m) * static_cast<size_t>(k) <= g.a8_bytes && act_stride % 4 == 0 &&
         (reinterpret_cast<uintptr_t>(act) % 8) == 0) {
-      launch_fp8_quantize_rows(act, static_cast<size_t>(act_stride), m, k, g.a8, g.a8_scales, stream);
+      launch_fp8_quantize_rows(act, static_cast<size_t>(act_stride), m, k, g.a8, g.a8_scales, stream, block_fp8);
       if (out_type == GemmOut::F32)
         launch_fp8_gemm_f32(g.a8, g.a8_scales, w8.payload, w8.scales, w8.scale_block_rows, static_cast<float*>(out),
                             m, n, k, stream, static_cast<size_t>(n));

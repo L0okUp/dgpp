@@ -142,12 +142,18 @@ DGPP_TEST(cluster_config_parses_fills_defaults_and_derives_the_world) {
               c.engine.bulk_pace_gbps == -1.0 && c.engine.bulk_inflight == -1 &&
               c.engine.rendezvous_timeout_ms == 120000 && !c.engine.reasoning_in_content &&
               c.engine.kv_dtype == "bf16" && c.engine.bf16_weights == "checkpoint" &&
+              c.engine.dense_fp8_backend == "bf16_bridge" &&
               c.engine.fp8_head == "gemv" && !c.engine.prefill_bf16_partials && !c.engine.prefill_fold_scales &&
               !c.engine.prefill_fp8_gemm && !c.engine.prefill_fp8_per_tensor && c.engine.dflash_model.empty() &&
               c.engine.dflash_verify_graph && c.engine.dflash_draft_batch && c.engine.dflash_depth == 0 &&
               c.engine.expert_gemm == "wide" && c.engine.expert_gemm_prefetch == 3 &&
               c.engine.expert_tile_list && !c.engine.expert_gemm_pair && c.engine.ngram_prestage,
           "the engine defaults");
+  for (const std::string backend : {"bf16_bridge", "block_fp8_b12x"}) {
+    const auto fp8 = dgpp::serve::parse_cluster_config(
+        R"({"model":"m","nodes":["h"],"engine":{"dense_fp8_backend":")" + backend + R"("}})", "t");
+    require(fp8.engine.dense_fp8_backend == backend, "dense_fp8_backend parses");
+  }
   // The expert GEMM's form and companions (2026-09-30): keys, not environment switches.
   const auto xg = dgpp::serve::parse_cluster_config(
       R"({"model":"m","nodes":["h"],"engine":{"expert_gemm":"wide4r","expert_gemm_prefetch":0,"expert_tile_list":false,"expert_gemm_pair":true,"ngram_prestage":false}})",
@@ -366,6 +372,8 @@ DGPP_TEST(cluster_config_refusesUnknownKeysAndBadValuesByName) {
        "'engine.expert_tile_list' must be true or false"},
       {R"({"model":"m","nodes":["h"],"engine":{"fp8_head":"auto"}})",
        "'engine.fp8_head' must be \"gemv\" or \"mma\""},
+      {R"({"model":"m","nodes":["h"],"engine":{"dense_fp8_backend":"fast"}})",
+       "'engine.dense_fp8_backend' must be \"bf16_bridge\" or \"block_fp8_b12x\""},
       {R"({"model":"m","nodes":["h"],"engine":{"fp8_head":true}})",
        "'engine.fp8_head' must be a string"},
       {R"({"model":"m","nodes":["h"],"engine":{"bf16_weights":"fp8"}})",

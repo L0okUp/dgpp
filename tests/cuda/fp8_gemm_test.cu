@@ -156,6 +156,32 @@ void run(const Shape& sh, std::mt19937& rng) {
   DGPP_CUDA_OK(cudaStreamDestroy(stream));
 }
 
+void run_b12x_quantizer_contract() {
+  constexpr int m = 2, k = 128;
+  constexpr size_t stride = 128;
+  const float floor = 1.f / (448.f * 512.f);
+  std::vector<uint16_t> act(m * stride, 0);
+  act[0] = dgpp::float_to_bf16_bits(1.f / 1024.f);  // below the b12x floor
+  act[stride] = dgpp::float_to_bf16_bits(896.f);    // ordinary amax / 448
+  Dev<uint16_t> d_act(act.size());
+  d_act.upload(act);
+  Dev<uint8_t> d_q(m * k);
+  Dev<float> d_scales(m);
+  cudaStream_t stream;
+  DGPP_CUDA_OK(cudaStreamCreate(&stream));
+  dgpp::launch_fp8_quantize_rows(d_act.p, stride, m, k, d_q.p, d_scales.p, stream, true);
+  DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+  const auto q = d_q.download();
+  const auto scales = d_scales.download();
+  require(scales[0] == floor, "b12x quantizer uses the documented nonzero minimum scale");
+  require(scales[1] == 2.f, "b12x quantizer preserves ordinary amax / 448 scale");
+  require(q[0] == dgpp::float_to_fp8_e4m3_bits(dgpp::bf16_bits_to_float(act[0]) / floor),
+          "b12x quantizer encodes a sub-minimum activation using its minimum scale");
+  require(q[stride] == dgpp::float_to_fp8_e4m3_bits(448.f),
+          "b12x quantizer saturates the group maximum at e4m3 448");
+  DGPP_CUDA_OK(cudaStreamDestroy(stream));
+}
+
 }  // namespace
 
 int main() {
@@ -168,6 +194,7 @@ int main() {
   for (const Shape& sh : {Shape{129, 320, 128, 128}, Shape{300, 1000, 2560, 64}, Shape{512, 2560, 1280, 128},
                           Shape{5, 40, 256, 32}})
     run(sh, rng);
+  run_b12x_quantizer_contract();
   std::printf("fp8_gemm_test: OK\n");
   return 0;
 }

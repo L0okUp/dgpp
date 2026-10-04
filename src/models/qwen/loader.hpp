@@ -333,6 +333,9 @@ class QwenLayerStream : public ResidentLayerStream<QwenLoaderFamily> {
   // before the model is built (the activation scratch follows it).
   static void set_prefill_fp8_gemm(bool on);
   static bool prefill_fp8_gemm();
+  // Strict A5B W8A8 dense path: all row counts use block-FP8 arithmetic.
+  static void set_block_fp8_b12x(bool on);
+  static bool block_fp8_b12x();
   // The chunk-ahead n-gram staging (engine.ngram_prestage, default on;
   // round 19: the next chunk's rows gathered while this one runs, bitwise).
   // Off keeps the one-channel staging. Set before the model is built.

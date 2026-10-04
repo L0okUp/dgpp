@@ -20,7 +20,7 @@ namespace dgpp {
 // = e4m3(x / scale) rounded to nearest, saturating. k % 128 == 0; act
 // 8-byte aligned with act_stride % 4 == 0.
 void launch_fp8_quantize_rows(const uint16_t* act, size_t act_stride, int m, int k, uint8_t* q,
-                              float* scales, cudaStream_t stream);
+                              float* scales, cudaStream_t stream, bool b12x_min_scale = false);
 
 // out[m][n] = A8 x W8^T: a [m][k] e4m3 with the quantizer's scales; w [n][k]
 // e4m3 (the checkpoint's payload) with f32 scales

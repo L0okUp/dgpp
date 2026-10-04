@@ -385,6 +385,8 @@ std::string encode_journal_settings(const WorldSettings& s) {
   append_json_string(&out, s.ngram_table);
   out += ",\"dw\":";
   append_json_string(&out, s.dense_weights);
+  out += ",\"dfp8\":";
+  append_json_string(&out, s.dense_fp8_backend);
   out += ",\"fp8_head\":";
   append_json_string(&out, s.fp8_head);
   out += ",\"mtpef\":";
@@ -582,6 +584,7 @@ JournalRecord decode_journal_line(std::string_view line) {
       s.fp8_head = std::string(head->as_string());
     }
     if (const dgpp::minijson::Value* dw = v.find("dw")) s.dense_weights = std::string(dw->as_string());
+    if (const dgpp::minijson::Value* dfp8 = v.find("dfp8")) s.dense_fp8_backend = std::string(dfp8->as_string());
     if (const dgpp::minijson::Value* mtpef = v.find("mtpef")) s.mtp_expert_format = std::string(mtpef->as_string());
     // The bf16 weights' form (2026-09-19): records before it carry none.
     if (const dgpp::minijson::Value* bfw = v.find("bfw")) s.bf16_weights = std::string(bfw->as_string());
@@ -656,6 +659,7 @@ JournalRecord decode_journal_line(std::string_view line) {
         !latent_format_from_string(s.kv_dtype) ||
         (s.ngram_table != "resident" && s.ngram_table != "mmap") ||
         (s.dense_weights != "checkpoint" && s.dense_weights != "fp8") ||
+        (s.dense_fp8_backend != "bf16_bridge" && s.dense_fp8_backend != "block_fp8_b12x") ||
         !parse_bf16_residency(s.bf16_weights, nullptr) ||
         (s.prefill != "bounded" && s.prefill != "exact") ||
         (s.embed_sharding != "replicated" && s.embed_sharding != "vocab"))

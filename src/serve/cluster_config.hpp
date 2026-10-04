@@ -70,6 +70,9 @@ struct ClusterConfig {
     // encoded to block FP8 at load — the same recipe as the FP8 releases;
     // docs/qwen38_single_spark.md).
     std::string dense_weights = "checkpoint";
+    // A5B only: use the native W8A8 K128 block-FP8 projection path instead
+    // of the default BF16-dequant bridge.
+    std::string dense_fp8_backend = "bf16_bridge";
     std::string fp8_head = "gemv";  // Qwen head: gemv | mma (opt-in)
     // The MTP draft layer's routed-expert layout: "fp8" (the default:
     // per-expert FP8 tensors as the NVIDIA release ships) or "bf16_fused"

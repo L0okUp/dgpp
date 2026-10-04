@@ -59,6 +59,14 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
               tp_world > 1 ? QwenHeadSharding::VocabSharded : QwenHeadSharding::Full,
               mtp && residency == QwenResidency::Resident) {
   if (max_tokens <= 0) throw std::invalid_argument("QwenModel: max_tokens must be positive");
+  if (QwenLayerStream::block_fp8_b12x()) {
+    if (cfg_.source_profile != QwenSourceProfile::A5bAutoGptq || !cfg_.dense_fp8_shipped)
+      throw std::invalid_argument("QwenModel: block_fp8_b12x is reserved for the strict A5B block-FP8 profile");
+    cudaDeviceProp prop{};
+    DGPP_CUDA_OK(cudaGetDeviceProperties(&prop, 0));
+    if (prop.major != 12 || prop.minor < 1)
+      throw std::invalid_argument("QwenModel: block_fp8_b12x requires an SM121 device");
+  }
   if (mtp && cfg_.mtp_layer() < 0)
     throw std::invalid_argument("QwenModel: the config has no draft layer (mtp)");
   if (max_requests <= 0 || max_requests > kPickMaxRequests)
@@ -106,7 +114,7 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
     dense_bridge_bytes_ = dense_bridge_bytes(cfg_, loader_.geometry());
     gw_.dequant = dev_alloc<uint16_t>(dense_bridge_bytes_ / 2);
     gw_.dequant_bytes = dense_bridge_bytes_;
-    if (QwenLayerStream::prefill_fp8_gemm()) {
+    if (QwenLayerStream::prefill_fp8_gemm() || QwenLayerStream::block_fp8_b12x()) {
       // The opt-in fp8 GEMM's activations (engine.prefill_fp8_gemm).
       const size_t kmax = dense_max_cols(cfg_, loader_.geometry());
       gw_.a8_bytes = static_cast<size_t>(max_tokens_) * kmax;
@@ -302,8 +310,9 @@ QwenModel::MemoryPlan QwenModel::plan_memory(const QwenTextConfig& cfg, int max_
   if (QwenLayerStream::dense_weights_fp8())
     plan.add("dense fp8 prefill bridge (the largest dense matrix in BF16)",
              dense_bridge_bytes(cfg, QwenLocalGeometry::from_config(cfg, tp_rank, tp_world, head)));
-  if (QwenLayerStream::dense_weights_fp8() && QwenLayerStream::prefill_fp8_gemm())
-    plan.add("dense fp8 prefill activations (e4m3 rows + 1x128 scales; engine.prefill_fp8_gemm)",
+  if (QwenLayerStream::dense_weights_fp8() &&
+      (QwenLayerStream::prefill_fp8_gemm() || QwenLayerStream::block_fp8_b12x()))
+    plan.add("dense fp8 activation scratch (e4m3 rows + 1x128 scales; selected FP8 backend)",
              fp8_act_scratch_bytes(cfg, QwenLocalGeometry::from_config(cfg, tp_rank, tp_world, head), max_tokens));
   if (has_ple && QwenLayerStream::ngram_table_mmap()) {
     // The table stays on the NVMe behind the page cache (nothing

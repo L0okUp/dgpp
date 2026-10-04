@@ -1444,6 +1444,7 @@ int main(int argc, char** argv) {
   std::string ngram_table_model;         // the table's shards from another cached snapshot (engine.ngram_table_model)
   std::string fp8_head = "gemv";
   std::string dense_weights = "checkpoint";  // the Qwen dense stack: checkpoint | fp8
+  std::string dense_fp8_backend = "bf16_bridge";
   std::string mtp_expert_format = "fp8";    // the Qwen MTP draft experts: fp8 | bf16_fused
   std::string bf16_weights = "checkpoint";  // the bf16 decode weights' resident form: checkpoint | bf12 | bf12+bf16
   std::string draft_vocab;                  // the Qwen draft head's vocabulary slice (engine.draft_vocab)
@@ -1551,6 +1552,7 @@ int main(int argc, char** argv) {
     ngram_table = e.ngram_table;
     ngram_table_model = e.ngram_table_model;
     dense_weights = e.dense_weights;
+    dense_fp8_backend = e.dense_fp8_backend;
     fp8_head = e.fp8_head;
     mtp_expert_format = e.mtp_expert_format;
     bf16_weights = e.bf16_weights;
@@ -1845,7 +1847,7 @@ int main(int argc, char** argv) {
     const int effective_batch_min_live =
         graph_batch_min_live == 0 ? std::min(2, max_concurrency) : graph_batch_min_live;
     return std::format(
-        "model={} world={} fabric={} journal={} conc={} kv={} kvdt={} ngt={} dw={} mtpef={} bfw={} "
+        "model={} world={} fabric={} journal={} conc={} kv={} kvdt={} ngt={} dw={} dfp8={} mtpef={} bfw={} "
         "fp8head={} pf={} "
         "emsh={} maxtok={} queue={} "
         "eos={} graph={} compact={} mtp={} mtpd={} mss={} msrow={} msbase={} mslam={} msmin={} "
@@ -1855,7 +1857,7 @@ int main(int argc, char** argv) {
         "reasoning_in_content={} "
         "rs={} dflash={}",
         model_id.empty() ? ckpt : model_id, world, fabric_port, journal_port, max_concurrency,
-        kv_capacity, kv_dtype, ngram_table, dense_weights, mtp_expert_format, bf16_weights, fp8_head, prefill,
+        kv_capacity, kv_dtype, ngram_table, dense_weights, dense_fp8_backend, mtp_expert_format, bf16_weights, fp8_head, prefill,
         embed_sharding, default_max_tokens, queue_limit, no_eos ? 0 : 1, decode_graph ? 1 : 0,
         compact_batches ? 1 : 0, mtp ? 1 : 0, mtp_depth, mtp_schedule ? 1 : 0, mtp_schedule_row_ms,
         mtp_schedule_base_ms, mtp_schedule_lambda, mtp_schedule_min_depth,
@@ -1896,6 +1898,7 @@ int main(int argc, char** argv) {
         ws.kv_dtype = kv_dtype;
         ws.ngram_table = ngram_table;
         ws.dense_weights = dense_weights;
+        ws.dense_fp8_backend = dense_fp8_backend;
         ws.fp8_head = fp8_head;
         ws.mtp_expert_format = mtp_expert_format;
         ws.bf16_weights = bf16_weights;
@@ -1968,6 +1971,7 @@ int main(int argc, char** argv) {
         kv_dtype = ws.kv_dtype;
         ngram_table = ws.ngram_table;
         dense_weights = ws.dense_weights;
+        dense_fp8_backend = ws.dense_fp8_backend;
         fp8_head = ws.fp8_head;
         mtp_expert_format = ws.mtp_expert_format;
         bf16_weights = ws.bf16_weights;
@@ -2083,6 +2087,18 @@ int main(int argc, char** argv) {
     DGPP_LOG_ERROR("--dense-weights must be checkpoint or fp8, got '{}'", dense_weights);
     return 2;
   }
+  if (dense_fp8_backend != "bf16_bridge" && dense_fp8_backend != "block_fp8_b12x") {
+    DGPP_LOG_ERROR("engine.dense_fp8_backend must be bf16_bridge or block_fp8_b12x, got '{}'", dense_fp8_backend);
+    return 2;
+  }
+  if (dense_fp8_backend == "block_fp8_b12x" && dense_weights != "fp8") {
+    DGPP_LOG_ERROR("engine.dense_fp8_backend block_fp8_b12x requires engine.dense_weights fp8");
+    return 2;
+  }
+  if (dense_fp8_backend == "block_fp8_b12x" && prefill_fp8_gemm) {
+    DGPP_LOG_ERROR("engine.dense_fp8_backend block_fp8_b12x conflicts with engine.prefill_fp8_gemm");
+    return 2;
+  }
   if (fp8_head == "mma" && dense_weights != "fp8") {
     DGPP_LOG_ERROR("engine.fp8_head mma requires engine.dense_weights fp8");
     return 1;
@@ -2129,6 +2145,7 @@ int main(int argc, char** argv) {
   dgpp::GlmMoeLayer::set_prefill_options(prefill_bf16_partials, prefill_fold_scales, expert_tile_list,
                                          expert_gemm_pair);
   dgpp::QwenLayerStream::set_prefill_fp8_gemm(prefill_fp8_gemm);
+  dgpp::QwenLayerStream::set_block_fp8_b12x(dense_fp8_backend == "block_fp8_b12x");
   // The Qwen3.8-27B family's two opt-in FP8 levers beyond its checkpoint
   // (both read by its memory plan and its constructor): the per-tensor
   // prefill recipe and the BF16 lm head requantized to block FP8.
