@@ -290,6 +290,7 @@ struct QwenLoaderFamily {
   // The extra shard directory and its admission filter (loaders/resident_stream.hpp).
   static std::string extra_shard_dir();
   static bool admit_extra_tensor(const std::string& name);
+  static bool override_extra_tensor(const std::string& name);
 };
 
 extern template class ResidentLayerStream<QwenLoaderFamily>;

@@ -271,6 +271,7 @@ QwenTextConfig QwenTextConfig::parse(const minijson::Value& tc,
   c.mtp_num_experts_per_tok = c.num_experts_per_tok;
   c.moe_intermediate_size = require_int(tc, "moe_intermediate_size");
   c.shared_expert_intermediate_size = require_int(tc, "shared_expert_intermediate_size");
+  c.mtp_shared_expert_intermediate_size = c.shared_expert_intermediate_size;
   c.norm_topk_prob = optional_bool(tc, "norm_topk_prob", true);
   if (c.num_experts <= 0 || c.num_experts > 4096) reject("num_experts", "must be in [1, 4096]");
   if (c.num_experts_per_tok <= 0 || c.num_experts_per_tok > c.num_experts ||
@@ -418,6 +419,7 @@ QwenTextConfig QwenTextConfig::parse(const minijson::Value& tc,
           bad("the 4-bit lm_head profile is reserved for the exact A5B AutoRound checkpoint");
         c.source_profile = QwenSourceProfile::A5bAutoGptq;
         c.mtp_num_experts_per_tok = 10;
+        c.mtp_shared_expert_intermediate_size = 640;
       }
       c.experts_fp8 = false;
       c.experts_nvfp4 = false;

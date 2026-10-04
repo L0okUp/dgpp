@@ -92,6 +92,7 @@ struct QwenTextConfig {
   int mtp_num_experts_per_tok = 10;
   int moe_intermediate_size = 640;
   int shared_expert_intermediate_size = 640;
+  int mtp_shared_expert_intermediate_size = 640;
   bool norm_topk_prob = true;
 
   // --- n-gram embedding (PLE) -------------------------------------------
@@ -144,6 +145,7 @@ struct QwenTextConfig {
   int gptq_group = 128;
 
   int draft_experts_per_tok() const { return mtp_num_experts_per_tok; }
+  int draft_shared_expert_intermediate_size() const { return mtp_shared_expert_intermediate_size; }
 
   // --- vision (docs/vision.md) --------------------------------------------
   // The multimodal release's tower, parsed from the root config's

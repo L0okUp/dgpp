@@ -480,7 +480,9 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     QwenMoeResident& m = out.moe;
     m.router = load_bf16(p + "gate.weight");
     m.shared_gate = load_bf16(p + "shared_expert_gate.weight");
-    const int64_t S = geo.local_shared_inter, I = geo.local_inter;
+    const int64_t S = p.rfind("mtp.", 0) == 0 ? cfg.draft_shared_expert_intermediate_size()
+                                                : geo.local_shared_inter;
+    const int64_t I = geo.local_inter;
     const int64_t r = rank;
     m.local_inter = I;
     m.local_shared_inter = S;
@@ -504,7 +506,8 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     const int E = cfg.num_experts;
     // The AutoRound hybrid: every layer's experts (the draft layer's too) as
     // int4 g128 GPTQ triples, transposed into the packed core's rows.
-    if (cfg.experts_gptq_int4) {
+    if (cfg.experts_gptq_int4 &&
+        (cfg.source_profile != QwenSourceProfile::A5bAutoGptq || p.rfind("mtp.", 0) != 0)) {
       m.experts_packed.resize(static_cast<size_t>(E) * 3);
       for (int e = 0; e < E; ++e) {
         const std::string ep = p + "experts." + std::to_string(e) + ".";
@@ -1110,7 +1113,11 @@ void QwenLayerStream::set_ngram_table_dir(const std::string& dir) { ngram_table_
 const std::string& QwenLayerStream::ngram_table_dir() { return ngram_table_dir_storage(); }
 std::string QwenLoaderFamily::extra_shard_dir() { return ngram_table_dir_storage(); }
 bool QwenLoaderFamily::admit_extra_tensor(const std::string& name) {
-  return name.find("ple.ple_embedding.ngram_embedding.") != std::string::npos;
+  return name.find("ple.ple_embedding.ngram_embedding.") != std::string::npos ||
+         name.rfind("mtp.layers.0.", 0) == 0;
+}
+bool QwenLoaderFamily::override_extra_tensor(const std::string& name) {
+  return name.rfind("mtp.layers.0.", 0) == 0;
 }
 
 // ---- the dense stack's form (engine.dense_weights) ------------------------------

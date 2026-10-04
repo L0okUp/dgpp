@@ -117,7 +117,8 @@ void expect_moe(TensorList& out, const std::string& p, const QwenTextConfig& cfg
   const int64_t H = cfg.hidden_size;
   add_bf16(out, p + "gate.weight", {cfg.num_experts, H}, QwenWeightClass::Router, layer);
   add_bf16(out, p + "shared_expert_gate.weight", {1, H}, QwenWeightClass::Router, layer);
-  const int64_t S = cfg.shared_expert_intermediate_size;
+  const int64_t S = layer == cfg.mtp_layer() ? cfg.draft_shared_expert_intermediate_size()
+                                               : cfg.shared_expert_intermediate_size;
   add_dense(out, p + "shared_expert.gate_proj.weight", S, H, QwenWeightClass::SharedExpert, layer, cfg);
   add_dense(out, p + "shared_expert.up_proj.weight", S, H, QwenWeightClass::SharedExpert, layer, cfg);
   add_dense(out, p + "shared_expert.down_proj.weight", H, S, QwenWeightClass::SharedExpert, layer, cfg);
@@ -125,7 +126,16 @@ void expect_moe(TensorList& out, const std::string& p, const QwenTextConfig& cfg
   const int64_t E = cfg.num_experts;
   // The AutoRound hybrid: every layer's experts (the draft layer's too) as
   // int4 GPTQ triples.
-  if (cfg.experts_gptq_int4) {
+  if (cfg.experts_gptq_int4 && cfg.source_profile != QwenSourceProfile::A5bAutoGptq) {
+    for (int e = 0; e < E; ++e) {
+      const std::string ep = p + "experts." + std::to_string(e) + ".";
+      add_gptq(out, ep + "gate_proj", I, H, 4, cfg.gptq_group, QwenWeightClass::RoutedExpert, layer, e);
+      add_gptq(out, ep + "up_proj", I, H, 4, cfg.gptq_group, QwenWeightClass::RoutedExpert, layer, e);
+      add_gptq(out, ep + "down_proj", H, I, 4, cfg.gptq_group, QwenWeightClass::RoutedExpert, layer, e);
+    }
+    return;
+  }
+  if (cfg.source_profile == QwenSourceProfile::A5bAutoGptq && layer != cfg.mtp_layer()) {
     for (int e = 0; e < E; ++e) {
       const std::string ep = p + "experts." + std::to_string(e) + ".";
       add_gptq(out, ep + "gate_proj", I, H, 4, cfg.gptq_group, QwenWeightClass::RoutedExpert, layer, e);
@@ -148,9 +158,10 @@ void expect_moe(TensorList& out, const std::string& p, const QwenTextConfig& cfg
   }
   for (int e = 0; e < E; ++e) {
     const std::string ep = p + "experts." + std::to_string(e) + ".";
-    add_quantized(out, ep + "gate_proj.weight", I, H, QwenWeightClass::RoutedExpert, layer, e, nvfp4);
-    add_quantized(out, ep + "up_proj.weight", I, H, QwenWeightClass::RoutedExpert, layer, e, nvfp4);
-    add_quantized(out, ep + "down_proj.weight", H, I, QwenWeightClass::RoutedExpert, layer, e, nvfp4);
+    const bool a5b_draft = cfg.source_profile == QwenSourceProfile::A5bAutoGptq;
+    add_quantized(out, ep + "gate_proj.weight", I, H, QwenWeightClass::RoutedExpert, layer, e, nvfp4, a5b_draft);
+    add_quantized(out, ep + "up_proj.weight", I, H, QwenWeightClass::RoutedExpert, layer, e, nvfp4, a5b_draft);
+    add_quantized(out, ep + "down_proj.weight", H, I, QwenWeightClass::RoutedExpert, layer, e, nvfp4, a5b_draft);
   }
 }
 

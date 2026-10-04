@@ -81,6 +81,11 @@ template <class F>
 struct has_extra_shard_dir<F, std::void_t<decltype(F::extra_shard_dir()),
                                           decltype(F::admit_extra_tensor(std::string{}))>>
     : std::true_type {};
+template <class F, class = void>
+struct has_extra_override : std::false_type {};
+template <class F>
+struct has_extra_override<F, std::void_t<decltype(F::override_extra_tensor(std::string{}))>>
+    : std::true_type {};
 }  // namespace detail
 
 enum class LoaderResidency { Streaming, Resident };
@@ -276,8 +281,16 @@ ResidentLayerStream<F>::ResidentLayerStream(const Config& cfg, const std::string
   // checkpoint's own shards did not carry them. Everything else in those
   // shards is ignored — never a duplicate, never unexpected.
   if constexpr (detail::has_extra_shard_dir<F>::value) {
-    const std::string extra = F::extra_shard_dir();
-    if (!extra.empty()) {
+    const std::string extras = F::extra_shard_dir();
+    size_t extra_begin = 0;
+    while (extra_begin <= extras.size()) {
+      const size_t extra_end = extras.find(':', extra_begin);
+      const std::string extra = extras.substr(extra_begin, extra_end - extra_begin);
+      if (extra.empty()) {
+        if (extra_end == std::string::npos) break;
+        extra_begin = extra_end + 1;
+        continue;
+      }
       if (!fs::is_directory(extra))
         throw std::runtime_error(std::string(F::who()) + ": the extra shard directory is not a directory: " + extra);
       std::vector<fs::path> extra_paths;
@@ -289,9 +302,13 @@ ResidentLayerStream<F>::ResidentLayerStream(const Config& cfg, const std::string
         auto f = SafetensorsFile::open(path.string());
         bool used = false;
         f->for_each([&](const TensorInfo& t) {
-          if (!F::admit_extra_tensor(t.name) || tensors_.count(t.name)) return;
-          tensors_.emplace(t.name, &t);
-          present.emplace(t.name, typename F::PresentMap::mapped_type{t.dtype, t.shape});
+          if (!F::admit_extra_tensor(t.name)) return;
+          bool replace = false;
+          if constexpr (detail::has_extra_override<F>::value)
+            replace = F::override_extra_tensor(t.name);
+          if (tensors_.count(t.name) && !replace) return;
+          tensors_[t.name] = &t;
+          present[t.name] = typename F::PresentMap::mapped_type{t.dtype, t.shape};
           used = true;
           ++admitted;
         });
@@ -299,6 +316,8 @@ ResidentLayerStream<F>::ResidentLayerStream(const Config& cfg, const std::string
       }
       if (admitted == 0)
         throw std::runtime_error(std::string(F::who()) + ": no admissible tensor in the extra shard directory " + extra);
+      if (extra_end == std::string::npos) break;
+      extra_begin = extra_end + 1;
     }
   }
   F::validate_binding(cfg_, present);
