@@ -8,6 +8,9 @@
 ## Target checkpoint
 
 The target is [azampatti's Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound](https://huggingface.co/azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound)
+
+**Qualified Hugging Face snapshot:** `1464274120d36a4d8fcaa934552334a7d83ce0fd`
+
 checkpoint: the standard architecture, quantized to int4 (GPTQ layout, group-128,
 healed weights), with **backbone routing at top-k 5 instead of 10**. Its BF16 MTP
 draft experts remain trained and routed at **top-k 10** — a checkpoint property,
