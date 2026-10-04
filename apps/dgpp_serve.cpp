@@ -2068,7 +2068,7 @@ int main(int argc, char** argv) {
   const fs::path a5b_draft = fs::path(ckpt) / "fast-fp8";
   if (fs::is_directory(a5b_ple) && fs::is_directory(a5b_draft)) {
     dgpp::QwenLayerStream::set_ngram_table_dir(a5b_ple.string() + ":" + a5b_draft.string());
-    DGPP_LOG_INFO("A5B auxiliary shards: table {} and draft {}", a5b_ple.string(), a5b_draft.string());
+    DGPP_LOG_INFO("Azampatti Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound auxiliary shards: table {} and draft {}", a5b_ple.string(), a5b_draft.string());
   } else if (!ngram_table_model.empty()) {
     std::string err;
     const std::string dir = dgpp::hf::model_dir(ngram_table_model, &err);

@@ -1,13 +1,13 @@
-# Qwen3.8-Flash-Next A5B (Int4-FAST) — master-port plan
+# Azampatti Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound — master-port plan
 
-**Status:** planning / docs only — no implementation on this branch.
-**Branch:** `agent/a5b-master-port` (this worktree)
+**Status:** port implementation on the current master lineage; qualification is recorded separately.
+**Branch:** `agent/azampatti-qwen38-a5b-int4-autoround-port` (this worktree)
 **WIP lineage (this machine):** `~/dgpp-a5b` → `~/dgpp-a5b-mtp` → `~/dgpp-a5b-retune`
 (tip `agent/a5b-retune`, fork base `84028a4`, 2026-09-28)
 
-## What A5B is
+## Target checkpoint
 
-A5B is [azampatti's Qwen3.8-Flash-Next-125B-A5B](https://huggingface.co/azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound)
+The target is [azampatti's Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound](https://huggingface.co/azampatti/Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound)
 checkpoint: the standard architecture, quantized to int4 (GPTQ layout, group-128,
 healed weights), with **backbone routing at top-k 5 instead of 10**. Its BF16 MTP
 draft experts remain trained and routed at **top-k 10** — a checkpoint property,

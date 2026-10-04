@@ -480,8 +480,10 @@ struct QwenLoaderFamily::Builder : WeightBuilder<QwenExpectedTensor> {
     QwenMoeResident& m = out.moe;
     m.router = load_bf16(p + "gate.weight");
     m.shared_gate = load_bf16(p + "shared_expert_gate.weight");
-    const int64_t S = p.rfind("mtp.", 0) == 0 ? cfg.draft_shared_expert_intermediate_size()
-                                                : geo.local_shared_inter;
+    const bool a5b_draft_layer = cfg.source_profile == QwenSourceProfile::A5bAutoGptq &&
+                                 p.rfind("mtp.", 0) == 0;
+    const int64_t S = a5b_draft_layer ? cfg.draft_shared_expert_intermediate_size()
+                                       : geo.local_shared_inter;
     const int64_t I = geo.local_inter;
     const int64_t r = rank;
     m.local_inter = I;

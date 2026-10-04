@@ -117,8 +117,10 @@ void expect_moe(TensorList& out, const std::string& p, const QwenTextConfig& cfg
   const int64_t H = cfg.hidden_size;
   add_bf16(out, p + "gate.weight", {cfg.num_experts, H}, QwenWeightClass::Router, layer);
   add_bf16(out, p + "shared_expert_gate.weight", {1, H}, QwenWeightClass::Router, layer);
-  const int64_t S = layer == cfg.mtp_layer() ? cfg.draft_shared_expert_intermediate_size()
-                                               : cfg.shared_expert_intermediate_size;
+  const bool a5b_draft_layer = cfg.source_profile == QwenSourceProfile::A5bAutoGptq &&
+                               layer == cfg.mtp_layer();
+  const int64_t S = a5b_draft_layer ? cfg.draft_shared_expert_intermediate_size()
+                                     : cfg.shared_expert_intermediate_size;
   add_dense(out, p + "shared_expert.gate_proj.weight", S, H, QwenWeightClass::SharedExpert, layer, cfg);
   add_dense(out, p + "shared_expert.up_proj.weight", S, H, QwenWeightClass::SharedExpert, layer, cfg);
   add_dense(out, p + "shared_expert.down_proj.weight", H, S, QwenWeightClass::SharedExpert, layer, cfg);

@@ -61,7 +61,7 @@ QwenModel::QwenModel(const QwenTextConfig& cfg, const std::string& checkpoint_di
   if (max_tokens <= 0) throw std::invalid_argument("QwenModel: max_tokens must be positive");
   if (QwenLayerStream::block_fp8_b12x()) {
     if (cfg_.source_profile != QwenSourceProfile::A5bAutoGptq || !cfg_.dense_fp8_shipped)
-      throw std::invalid_argument("QwenModel: block_fp8_b12x is reserved for the strict A5B block-FP8 profile");
+      throw std::invalid_argument("QwenModel: block_fp8_b12x is reserved for the strict Azampatti Qwen3.8-Flash-Next-125B-A5B-INT4-AutoRound block-FP8 profile");
     cudaDeviceProp prop{};
     DGPP_CUDA_OK(cudaGetDeviceProperties(&prop, 0));
     if (prop.major != 12 || prop.minor < 1)
