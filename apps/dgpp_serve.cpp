@@ -2060,7 +2060,12 @@ int main(int argc, char** argv) {
   // The table's shards from another cached snapshot (the AutoRound hybrid
   // ships none): resolved like --model, set before the family opens the
   // checkpoint (the loader admits only the table's tensors from it).
-  if (!ngram_table_model.empty()) {
+  const fs::path a5b_ple = fs::path(ckpt) / "ple-table";
+  const fs::path a5b_draft = fs::path(ckpt) / "fast-fp8";
+  if (fs::is_directory(a5b_ple) && fs::is_directory(a5b_draft)) {
+    dgpp::QwenLayerStream::set_ngram_table_dir(a5b_ple.string() + ":" + a5b_draft.string());
+    DGPP_LOG_INFO("A5B auxiliary shards: table {} and draft {}", a5b_ple.string(), a5b_draft.string());
+  } else if (!ngram_table_model.empty()) {
     std::string err;
     const std::string dir = dgpp::hf::model_dir(ngram_table_model, &err);
     if (dir.empty()) {
