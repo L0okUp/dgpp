@@ -59,7 +59,10 @@ void run(const Shape& sh, std::mt19937& rng) {
     const float rs = (r % 7 == 0) ? 8.f : 1.f;
     for (int c = 0; c < k; ++c) act[r * stride + c] = dgpp::float_to_bf16_bits(normal(rng) * rs);
   }
-  for (int c = 0; c < 128; ++c) act[static_cast<size_t>(m - 1) * stride + c] = 0;  // an all-zero group
+  // Keep an all-zero group without making the M=1/K=128 oracle's complete
+  // reference norm zero.
+  if (m > 1)
+    for (int c = 0; c < 128; ++c) act[static_cast<size_t>(m - 1) * stride + c] = 0;
   // Weights: e4m3 codes (no NaN codes) and a 128 x sbr scale grid.
   std::vector<uint8_t> w(static_cast<size_t>(n) * k);
   std::uniform_int_distribution<int> code(0, 255);
@@ -191,8 +194,15 @@ int main() {
     return 2;
   }
   std::mt19937 rng(20260930);
-  for (const Shape& sh : {Shape{129, 320, 128, 128}, Shape{300, 1000, 2560, 64}, Shape{512, 2560, 1280, 128},
-                          Shape{5, 40, 256, 32}})
+  // Decode and graph-verify envelopes exercise the compact M dispatch.  The
+  // ragged N values also prove that omitted wide-CTA MMA tiles cannot alter
+  // the valid output fringe.
+  for (const Shape& sh : {Shape{1, 65, 128, 128}, Shape{6, 127, 256, 64},
+                          Shape{16, 193, 1280, 128}, Shape{17, 255, 2560, 64},
+                          Shape{32, 321, 128, 128}, Shape{33, 511, 1280, 128},
+                          Shape{48, 1000, 2560, 64}, Shape{64, 2560, 1280, 128},
+                          Shape{129, 320, 128, 128}, Shape{300, 1000, 2560, 64},
+                          Shape{512, 2560, 1280, 128}, Shape{5, 40, 256, 32}})
     run(sh, rng);
   run_b12x_quantizer_contract();
   std::printf("fp8_gemm_test: OK\n");

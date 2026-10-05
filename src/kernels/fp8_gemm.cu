@@ -231,6 +231,82 @@ __global__ __launch_bounds__(kThreads, 1) void fp8_gemm_kernel(const uint8_t* __
       }
 }
 
+// Compact decode CTA: four warps cover BM x 64.  BM=16 assigns one 16-wide
+// N stripe to each warp; BM=32 assigns a 16 x 32 subtile to each warp.
+// Its K32 MMA order and K128 scale promotion intentionally mirror the wide
+// reference above.
+template <typename OutT, int BM>
+__global__ __launch_bounds__(128, 1) void fp8_gemm_compact_kernel(
+    const uint8_t* __restrict__ a, const float* __restrict__ a_scales,
+    const uint8_t* __restrict__ w, const float* __restrict__ w_scales, int sbr,
+    OutT* __restrict__ out, int m, int n, int k, size_t out_stride) {
+  constexpr int BN = 64, threads = 128;
+  extern __shared__ __align__(128) uint8_t smem[];
+  uint8_t* sa = smem;
+  uint8_t* sb = smem + kStages * BM * kStride;
+  const int tid = threadIdx.x, warp = tid / 32, lane = tid % 32;
+  const int m0 = blockIdx.y * BM, n0 = blockIdx.x * BN;
+  const int rb = BM == 16 ? 0 : (warp / 2) * 16;
+  const int nb = BM == 16 ? warp * 16 : (warp % 2) * 32;
+  constexpr int nt = BM == 16 ? 2 : 4;
+  const int steps = k / kBK, groups = k / kGroup;
+  auto issue = [&](int step, int slot) {
+    uint8_t* as = sa + slot * BM * kStride;
+    uint8_t* bs = sb + slot * BN * kStride;
+    const int koff = step * kBK;
+    for (int q = tid; q < BM * 4; q += threads) {
+      const int row = q / 4, chunk = (q % 4) * 16;
+      const bool ok = m0 + row < m;
+      cp16(as + row * kStride + chunk,
+           a + static_cast<size_t>(ok ? m0 + row : 0) * k + koff + chunk, ok);
+    }
+    for (int q = tid; q < BN * 4; q += threads) {
+      const int row = q / 4, chunk = (q % 4) * 16;
+      const bool ok = n0 + row < n;
+      cp16(bs + row * kStride + chunk,
+           w + static_cast<size_t>(ok ? n0 + row : 0) * k + koff + chunk, ok);
+    }
+  };
+  const int r = lane / 4, cc = (lane % 4) * 2;
+  float acc[4][4] = {}, partial[4][4] = {};
+  for (int s = 0; s < kStages - 1; ++s) { if (s < steps) issue(s, s); commit(); }
+  for (int step = 0; step < steps; ++step) {
+    wait_pending<kStages - 2>(); __syncthreads();
+    const int nxt = step + kStages - 1; if (nxt < steps) issue(nxt, nxt % kStages); commit();
+    const uint8_t* as = sa + (step % kStages) * BM * kStride;
+    const uint8_t* bs = sb + (step % kStages) * BN * kStride;
+    for (int kk = 0; kk < kBK; kk += 32) {
+      uint32_t af[4]; ldsm_x4(af, as + (rb + lane % 16) * kStride + kk + (lane / 16) * 16);
+      uint32_t bf[4][2];
+      for (int jj = 0; jj < nt / 2; ++jj) {
+        const int t = nb + jj * 16 + (lane / 16) * 8 + lane % 8;
+        const int kb = kk + ((lane / 8) % 2) * 16; uint32_t q[4]; ldsm_x4(q, bs + t * kStride + kb);
+        bf[jj * 2][0]=q[0]; bf[jj * 2][1]=q[1]; bf[jj * 2 + 1][0]=q[2]; bf[jj * 2 + 1][1]=q[3];
+      }
+      for (int j = 0; j < nt; ++j) asm volatile(
+        "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+        : "+f"(partial[j][0]), "+f"(partial[j][1]), "+f"(partial[j][2]), "+f"(partial[j][3])
+        : "r"(af[0]), "r"(af[1]), "r"(af[2]), "r"(af[3]), "r"(bf[j][0]), "r"(bf[j][1]));
+    }
+    if (step % 2 == 1) {
+      const int g = step / 2;
+      for (int j = 0; j < nt; ++j) for (int v = 0; v < 4; ++v) {
+        const int row = m0 + rb + r + (v / 2) * 8, col = n0 + nb + j * 8 + cc + (v % 2);
+        const float x = row < m ? a_scales[static_cast<size_t>(row) * groups + g] : 0.f;
+        const float y = col < n ? w_scales[static_cast<size_t>(col / sbr) * groups + g] : 0.f;
+        acc[j][v] = __fmaf_rn(x * y, partial[j][v], acc[j][v]); partial[j][v] = 0.f;
+      }
+    }
+  }
+  for (int j = 0; j < nt; ++j) for (int v = 0; v < 4; ++v) {
+    const int row = m0 + rb + r + (v / 2) * 8, col = n0 + nb + j * 8 + cc + (v % 2);
+    if (row < m && col < n) {
+      if constexpr (std::is_same_v<OutT, float>) out[static_cast<size_t>(row) * out_stride + col] = acc[j][v];
+      else out[static_cast<size_t>(row) * out_stride + col] = __bfloat16_as_ushort(__float2bfloat16_rn(acc[j][v]));
+    }
+  }
+}
+
 template <typename OutT>
 void launch(const uint8_t* a, const float* a_scales, const uint8_t* w, const float* w_scales, int sbr, OutT* out,
             int m, int n, int k, cudaStream_t stream, size_t out_stride) {
@@ -238,6 +314,19 @@ void launch(const uint8_t* a, const float* a_scales, const uint8_t* w, const flo
   if (k <= 0 || k % kGroup != 0) throw std::invalid_argument("fp8 gemm: k must be a positive multiple of 128");
   if (sbr <= 0) throw std::invalid_argument("fp8 gemm: the weight scale block rows must be positive");
   if (out_stride == 0) out_stride = static_cast<size_t>(n);
+  if (m <= 64) {
+    if (m <= 16) {
+      constexpr int smem = kStages * (16 + 64) * kStride;
+      DGPP_CUDA_OK(cudaFuncSetAttribute(fp8_gemm_compact_kernel<OutT, 16>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+      fp8_gemm_compact_kernel<OutT, 16><<<dim3((n + 63) / 64, (m + 15) / 16), 128, smem, stream>>>(a, a_scales, w, w_scales, sbr, out, m, n, k, out_stride);
+    } else {
+      constexpr int smem = kStages * (32 + 64) * kStride;
+      DGPP_CUDA_OK(cudaFuncSetAttribute(fp8_gemm_compact_kernel<OutT, 32>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+      fp8_gemm_compact_kernel<OutT, 32><<<dim3((n + 63) / 64, (m + 31) / 32), 128, smem, stream>>>(a, a_scales, w, w_scales, sbr, out, m, n, k, out_stride);
+    }
+    DGPP_CUDA_OK(cudaGetLastError());
+    return;
+  }
   static bool attr_set = false;  // once per OutT
   if (!attr_set) {
     DGPP_CUDA_OK(cudaFuncSetAttribute(fp8_gemm_kernel<OutT>, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmem));
