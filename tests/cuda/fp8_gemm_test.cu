@@ -84,16 +84,22 @@ void run(const Shape& sh, std::mt19937& rng) {
   d_ws.upload(ws);
   Dev<float> d_out(static_cast<size_t>(m) * n);
   Dev<uint16_t> d_out16(static_cast<size_t>(m) * n);
+  Dev<float> d_wide_out(static_cast<size_t>(m) * n);
+  Dev<uint16_t> d_wide_out16(static_cast<size_t>(m) * n);
   cudaStream_t stream;
   DGPP_CUDA_OK(cudaStreamCreate(&stream));
   dgpp::launch_fp8_quantize_rows(d_act.p, stride, m, k, d_q.p, d_as.p, stream);
   dgpp::launch_fp8_gemm_f32(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_out.p, m, n, k, stream);
   dgpp::launch_fp8_gemm_bf16(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_out16.p, m, n, k, stream);
+  dgpp::launch_fp8_gemm_f32_wide_reference(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_wide_out.p, m, n, k, stream);
+  dgpp::launch_fp8_gemm_bf16_wide_reference(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_wide_out16.p, m, n, k, stream);
   DGPP_CUDA_OK(cudaStreamSynchronize(stream));
   const auto q = d_q.download();
   const auto as = d_as.download();
   const auto out = d_out.download();
   const auto out16 = d_out16.download();
+  const auto wide_out = d_wide_out.download();
+  const auto wide_out16 = d_wide_out16.download();
 
   // 1. The quantizer: scale = amax / 448 (1 for an all-zero group), each
   //    code the host encoder's of x / scale.
@@ -124,6 +130,7 @@ void run(const Shape& sh, std::mt19937& rng) {
     }
   double err_exact = 0, err_chain = 0, den = 0, ref_sq = 0, max_abs = 0;
   size_t bf16_mismatch = 0;
+  size_t wide_f32_mismatch = 0, wide_bf16_mismatch = 0;
   for (int r = 0; r < m; ++r) {
     for (int c = 0; c < n; ++c) {
       double ref = 0, chain = 0;
@@ -143,16 +150,21 @@ void run(const Shape& sh, std::mt19937& rng) {
       ref_sq += ref * ref;
       max_abs = std::max(max_abs, std::fabs(got - ref));
       if (out16[static_cast<size_t>(r) * n + c] != dgpp::float_to_bf16_bits(out[static_cast<size_t>(r) * n + c])) ++bf16_mismatch;
+      if (out[static_cast<size_t>(r) * n + c] != wide_out[static_cast<size_t>(r) * n + c]) ++wide_f32_mismatch;
+      if (out16[static_cast<size_t>(r) * n + c] != wide_out16[static_cast<size_t>(r) * n + c]) ++wide_bf16_mismatch;
     }
   }
   const double rel_exact = std::sqrt(err_exact / den), rel_chain = std::sqrt(err_chain / den);
   const double ref_rms = std::sqrt(ref_sq / (static_cast<double>(m) * n));
   std::printf("m=%d n=%d k=%d sbr=%d: vs exact %.2e (max %.2e of the output RMS), vs the bf16 chain %.3f, "
-              "bf16 mismatches %zu\n",
-              m, n, k, sbr, rel_exact, max_abs / ref_rms, rel_chain, bf16_mismatch);
+              "bf16 mismatches %zu, wide f32/bf16 mismatches %zu/%zu\n",
+              m, n, k, sbr, rel_exact, max_abs / ref_rms, rel_chain, bf16_mismatch, wide_f32_mismatch,
+              wide_bf16_mismatch);
   require(rel_exact < 1e-5, "the GEMM agrees with the exact sum of its own quantized inputs (fp32 accumulation)");
   require(max_abs < 1e-4 * ref_rms, "no element far from the exact sum (against the output's RMS)");
   require(bf16_mismatch == 0, "the bf16 output is the f32 output rounded once");
+  require(wide_f32_mismatch == 0, "compact fp8 f32 output is bitwise the wide reference");
+  require(wide_bf16_mismatch == 0, "compact fp8 bf16 output is bitwise the wide reference");
   // The e4m3 activation carries ~2^-4 relative error an element; the dot
   // product's relative RMS error stays near that (independent errors).
   require(rel_chain < 0.06, "within the quantized model's tolerance of the dequantized bf16 chain");
@@ -185,9 +197,48 @@ void run_b12x_quantizer_contract() {
   DGPP_CUDA_OK(cudaStreamDestroy(stream));
 }
 
+// This is deliberately opt-in: CTest validates parity, while maintainers can
+// use --benchmark on the target GPU to compare the production compact
+// dispatch with the retained wide oracle without involving model loading.
+void benchmark_decode_tiles() {
+  constexpr int max_m = 48, n = 2560, k = 2560, sbr = 128, iters = 100;
+  const int groups = k / 128;
+  std::vector<uint16_t> act(static_cast<size_t>(max_m) * k, dgpp::float_to_bf16_bits(0.125f));
+  std::vector<uint8_t> w(static_cast<size_t>(n) * k, 0x38);  // finite e4m3 1.0
+  std::vector<float> ws(static_cast<size_t>((n + sbr - 1) / sbr) * groups, 0.01f);
+  Dev<uint16_t> d_act(act.size()); d_act.upload(act);
+  Dev<uint8_t> d_q(static_cast<size_t>(max_m) * k);
+  Dev<float> d_as(static_cast<size_t>(max_m) * groups);
+  Dev<uint8_t> d_w(w.size()); d_w.upload(w);
+  Dev<float> d_ws(ws.size()); d_ws.upload(ws);
+  Dev<float> d_out(static_cast<size_t>(max_m) * n);
+  cudaStream_t stream; DGPP_CUDA_OK(cudaStreamCreate(&stream));
+  dgpp::launch_fp8_quantize_rows(d_act.p, k, max_m, k, d_q.p, d_as.p, stream, true);
+  DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+  cudaEvent_t start, stop; DGPP_CUDA_OK(cudaEventCreate(&start)); DGPP_CUDA_OK(cudaEventCreate(&stop));
+  for (int m : {6, 12, 24, 48}) {
+    dgpp::launch_fp8_gemm_f32(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_out.p, m, n, k, stream);
+    dgpp::launch_fp8_gemm_f32_wide_reference(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_out.p, m, n, k, stream);
+    DGPP_CUDA_OK(cudaStreamSynchronize(stream));
+    DGPP_CUDA_OK(cudaEventRecord(start, stream));
+    for (int i = 0; i < iters; ++i)
+      dgpp::launch_fp8_gemm_f32(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_out.p, m, n, k, stream);
+    DGPP_CUDA_OK(cudaEventRecord(stop, stream)); DGPP_CUDA_OK(cudaEventSynchronize(stop));
+    float compact_ms = 0; DGPP_CUDA_OK(cudaEventElapsedTime(&compact_ms, start, stop));
+    DGPP_CUDA_OK(cudaEventRecord(start, stream));
+    for (int i = 0; i < iters; ++i)
+      dgpp::launch_fp8_gemm_f32_wide_reference(d_q.p, d_as.p, d_w.p, d_ws.p, sbr, d_out.p, m, n, k, stream);
+    DGPP_CUDA_OK(cudaEventRecord(stop, stream)); DGPP_CUDA_OK(cudaEventSynchronize(stop));
+    float wide_ms = 0; DGPP_CUDA_OK(cudaEventElapsedTime(&wide_ms, start, stop));
+    std::printf("microbench m=%d n=%d k=%d: compact %.3f ms, wide %.3f ms, speedup %.3fx\n",
+                m, n, k, compact_ms / iters, wide_ms / iters, wide_ms / compact_ms);
+  }
+  cudaEventDestroy(stop); cudaEventDestroy(start); DGPP_CUDA_OK(cudaStreamDestroy(stream));
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   int devices = 0;
   if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) {
     std::printf("no CUDA device: skipped\n");
@@ -205,6 +256,7 @@ int main() {
                           Shape{512, 2560, 1280, 128}, Shape{5, 40, 256, 32}})
     run(sh, rng);
   run_b12x_quantizer_contract();
+  if (argc == 2 && std::string(argv[1]) == "--benchmark") benchmark_decode_tiles();
   std::printf("fp8_gemm_test: OK\n");
   return 0;
 }

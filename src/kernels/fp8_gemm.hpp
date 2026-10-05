@@ -36,4 +36,14 @@ void launch_fp8_gemm_f32(const uint8_t* a, const float* a_scales, const uint8_t*
                          const float* w_scales, int w_scale_block_rows, float* out, int m, int n,
                          int k, cudaStream_t stream, size_t out_stride = 0);
 
+// Test and microbenchmark oracle: always dispatch the retained 128 x 128
+// implementation, bypassing compact A5B decode tiles.  This is deliberately
+// internal to the kernel API; serving code must use the normal launchers.
+void launch_fp8_gemm_bf16_wide_reference(const uint8_t* a, const float* a_scales, const uint8_t* w,
+                                         const float* w_scales, int w_scale_block_rows, uint16_t* out, int m,
+                                         int n, int k, cudaStream_t stream, size_t out_stride = 0);
+void launch_fp8_gemm_f32_wide_reference(const uint8_t* a, const float* a_scales, const uint8_t* w,
+                                        const float* w_scales, int w_scale_block_rows, float* out, int m, int n,
+                                        int k, cudaStream_t stream, size_t out_stride = 0);
+
 }  // namespace dgpp

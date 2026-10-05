@@ -309,19 +309,29 @@ __global__ __launch_bounds__(128, 1) void fp8_gemm_compact_kernel(
 
 template <typename OutT>
 void launch(const uint8_t* a, const float* a_scales, const uint8_t* w, const float* w_scales, int sbr, OutT* out,
-            int m, int n, int k, cudaStream_t stream, size_t out_stride) {
+            int m, int n, int k, cudaStream_t stream, size_t out_stride, bool force_wide = false) {
   if (m <= 0 || n <= 0) return;
   if (k <= 0 || k % kGroup != 0) throw std::invalid_argument("fp8 gemm: k must be a positive multiple of 128");
   if (sbr <= 0) throw std::invalid_argument("fp8 gemm: the weight scale block rows must be positive");
   if (out_stride == 0) out_stride = static_cast<size_t>(n);
-  if (m <= 64) {
+  if (!force_wide && m <= 64) {
     if (m <= 16) {
       constexpr int smem = kStages * (16 + 64) * kStride;
-      DGPP_CUDA_OK(cudaFuncSetAttribute(fp8_gemm_compact_kernel<OutT, 16>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+      static bool attr_set = false;  // once per OutT / compact tile shape
+      if (!attr_set) {
+        DGPP_CUDA_OK(cudaFuncSetAttribute(fp8_gemm_compact_kernel<OutT, 16>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+        attr_set = true;
+      }
       fp8_gemm_compact_kernel<OutT, 16><<<dim3((n + 63) / 64, (m + 15) / 16), 128, smem, stream>>>(a, a_scales, w, w_scales, sbr, out, m, n, k, out_stride);
     } else {
       constexpr int smem = kStages * (32 + 64) * kStride;
-      DGPP_CUDA_OK(cudaFuncSetAttribute(fp8_gemm_compact_kernel<OutT, 32>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+      static bool attr_set = false;  // once per OutT / compact tile shape
+      if (!attr_set) {
+        DGPP_CUDA_OK(cudaFuncSetAttribute(fp8_gemm_compact_kernel<OutT, 32>,
+                                          cudaFuncAttributeMaxDynamicSharedMemorySize, smem));
+        attr_set = true;
+      }
       fp8_gemm_compact_kernel<OutT, 32><<<dim3((n + 63) / 64, (m + 31) / 32), 128, smem, stream>>>(a, a_scales, w, w_scales, sbr, out, m, n, k, out_stride);
     }
     DGPP_CUDA_OK(cudaGetLastError());
@@ -360,6 +370,16 @@ void launch_fp8_gemm_f32(const uint8_t* a, const float* a_scales, const uint8_t*
                          int w_scale_block_rows, float* out, int m, int n, int k, cudaStream_t stream,
                          size_t out_stride) {
   launch<float>(a, a_scales, w, w_scales, w_scale_block_rows, out, m, n, k, stream, out_stride);
+}
+void launch_fp8_gemm_bf16_wide_reference(const uint8_t* a, const float* a_scales, const uint8_t* w,
+                                         const float* w_scales, int w_scale_block_rows, uint16_t* out, int m,
+                                         int n, int k, cudaStream_t stream, size_t out_stride) {
+  launch<uint16_t>(a, a_scales, w, w_scales, w_scale_block_rows, out, m, n, k, stream, out_stride, true);
+}
+void launch_fp8_gemm_f32_wide_reference(const uint8_t* a, const float* a_scales, const uint8_t* w,
+                                        const float* w_scales, int w_scale_block_rows, float* out, int m, int n,
+                                        int k, cudaStream_t stream, size_t out_stride) {
+  launch<float>(a, a_scales, w, w_scales, w_scale_block_rows, out, m, n, k, stream, out_stride, true);
 }
 
 }  // namespace dgpp
