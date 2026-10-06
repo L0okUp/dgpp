@@ -26,7 +26,8 @@
     "stats_interval_s": 10,
     "prefill_budget_tokens": 4096,
     "prefill_idle_budget_tokens": 4096,
-    "model_alias": "qwen"
+    "model_alias": "qwen",
+    "fp8_head": "mma"
   },
   "paths": {
     "resident_cache": ""
